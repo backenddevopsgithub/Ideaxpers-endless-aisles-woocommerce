@@ -1,0 +1,27 @@
+# Security
+
+## Credential storage
+
+QA and production tokens are never stored in the general settings option. Each token is encrypted with AES-256-GCM using a fresh 96-bit nonce and an authentication tag. The encryption key is derived at runtime with HKDF-SHA-256 from WordPress `AUTH_KEY`, `SECURE_AUTH_KEY`, `LOGGED_IN_KEY`, and `NONCE_KEY`; the derived key is never persisted. Stored values carry a version prefix for future rotation/migration.
+
+The settings form always renders token inputs empty. A blank submission retains the existing ciphertext; a nonblank value replaces it. The UI reveals only whether a token is configured. Missing salts, unavailable OpenSSL, malformed ciphertext, or authentication failure cause a closed failure: plaintext is not stored and decryption returns no usable token to callers.
+
+Changing WordPress salts invalidates existing ciphertext by design. After rotating salts, enter replacement tokens in the administrator screen.
+
+## Administrative controls
+
+Settings require the `manage_woocommerce` capability and a WordPress nonce. Inputs are allowlisted or sanitized, and all rendered values are escaped. Integration services do not initialize unless WooCommerce is active.
+
+## Logging
+
+Structured context is recursively redacted by key and inline secret patterns before insertion. Authentication headers are never passed to the logger. `X-EA-REQUEST-TOKEN`, authorization values, API keys, tokens, cookies, sessions, passwords, secrets, payment fields, and customer contact/address fields are redacted; unsupported objects and resources are rejected from context. API response bodies are not logged. The table retains at most 2,000 recent entries; administrators can view the latest 50.
+
+## Network safety
+
+Documented base URLs and endpoint paths are committed; credentials are not. The API uses `X-EA-REQUEST-TOKEN` and never Bearer authentication. The connection test sends one explicit, read-only product-list GET, stores no returned product data, and logs neither token nor URL. The API client uses WordPress safe HTTP requests, disables redirects, enforces bounded timeouts, and applies a 5 MiB default response ceiling before JSON decoding. Structured failures exclude response bodies, transport details, URLs, and credentials. QA is the default. Production resolution and request orchestration both require an exact checkbox confirmation, stored as a versioned internal sentinel, in addition to selecting Production.
+
+The release builder copies only an explicit source allowlist into an isolated build directory. It does not read or copy `.env` files, WordPress configuration, Composer authentication files, or environment credentials.
+
+## Reporting issues
+
+Report suspected credential exposure privately to the project owner. Do not include tokens, authorization headers, customer payment data, or production payloads in issue reports.

@@ -1,0 +1,11 @@
+/vendor/
+/.phpunit.cache/
+/.phpcs-cache
+/.phpstan/
+/build/
+/*.zip
+/.idea/
+/.vscode/
+*.log
+.DS_Store
+Thumbs.db

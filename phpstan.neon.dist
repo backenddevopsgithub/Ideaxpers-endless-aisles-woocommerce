@@ -1,0 +1,16 @@
+includes:
+  - vendor/szepeviktor/phpstan-wordpress/extension.neon
+parameters:
+  level: 6
+  parallel:
+    maximumNumberOfProcesses: 1
+  paths:
+    - src
+    - tools
+    - ideaxperts-endless-aisles.php
+  stubFiles:
+    - tests/stubs/action-scheduler.stub
+  excludePaths:
+    analyse:
+      - vendor
+  treatPhpDocTypesAsCertain: false
