@@ -1,0 +1,9 @@
+<?php
+
+/** @param array<string,mixed> $args */
+function wc_get_products( array $args ): object {}
+
+/** @return array<string,string> */
+function wc_get_product_statuses(): array {}
+
+function wc_get_product( int $product_id ): object|false|null {}

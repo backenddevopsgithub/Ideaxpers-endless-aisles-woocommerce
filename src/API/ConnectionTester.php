@@ -46,14 +46,31 @@ final class ConnectionTester {
 				&& array_is_list( $response['data'] )
 				&& ( array() === $response['data'] || ( 1 === count( $response['data'] ) && is_object( $response['data'][0] ) ) );
 			if ( ! $valid_envelope ) {
+				$this->store_qa_status( $environment, 'unexpected_response' );
 				return new ConnectionTestResult( false, 'unexpected_response', __( 'Endless Aisles returned an unexpected product-list structure.', 'ideaxperts-endless-aisles' ) );
 			}
+			$this->store_qa_status( $environment, 'connected' );
 			return new ConnectionTestResult( true, 'connected', __( 'Authenticated read-only connection succeeded.', 'ideaxperts-endless-aisles' ) );
 		} catch ( ApiException $exception ) {
+			$this->store_qa_status( $environment, 'failed' );
 			$this->logger->log( 'warning', 'Endless Aisles connection test failed.', $exception->context() );
 			$status  = str_contains( strtolower( $exception->getMessage() ), 'timed out' ) ? 'timeout' : 'request_failed';
 			$message = 'timeout' === $status ? __( 'The connection test timed out.', 'ideaxperts-endless-aisles' ) : __( 'The connection test failed.', 'ideaxperts-endless-aisles' );
 			return new ConnectionTestResult( false, $status, $message );
 		}
+	}
+
+	private function store_qa_status( string $environment, string $status ): void {
+		if ( 'qa' !== $environment ) {
+			return;
+		}
+		update_option(
+			'ideaxperts_ea_qa_connection_status',
+			array(
+				'status'    => $status,
+				'tested_at' => current_time( 'mysql', true ),
+			),
+			false
+		);
 	}
 }

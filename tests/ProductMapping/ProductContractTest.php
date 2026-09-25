@@ -16,4 +16,9 @@ final class ProductContractTest extends TestCase {
 		self::assertSame( '001234567890', $size['upc'] );
 		self::assertArrayNotHasKey( 'undocumented', $size );
 	}
+
+	public function test_numeric_json_upc_is_not_coerced_to_a_string(): void {
+		$size = ProductContract::normalize_size( array( 'upc' => 123456789012 ) );
+		self::assertSame( 123456789012, $size['upc'] );
+	}
 }

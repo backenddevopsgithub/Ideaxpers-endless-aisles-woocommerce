@@ -70,6 +70,7 @@ final class ApiClient implements ApiClientInterface {
 		$status         = wp_remote_retrieve_response_code( $response );
 		$raw            = wp_remote_retrieve_body( $response );
 		$content_length = trim( (string) wp_remote_retrieve_header( $response, 'content-length' ) );
+		$retry_after    = trim( (string) wp_remote_retrieve_header( $response, 'retry-after' ) );
 		if ( ( '' !== $content_length && ctype_digit( $content_length ) && (int) $content_length > $size_limit ) || strlen( $raw ) >= $size_limit ) {
 			throw new ApiException(
 				'Endless Aisles response exceeded the configured size limit.',
@@ -80,6 +81,13 @@ final class ApiClient implements ApiClientInterface {
 				)
 			);
 		}
+		if ( $status < 200 || $status >= 300 ) {
+			$context = array( 'status' => $status );
+			if ( ctype_digit( $retry_after ) ) {
+				$context['retry_after'] = (int) $retry_after;
+			}
+			throw new ApiException( 'Endless Aisles returned an unsuccessful response.', $context, $status );
+		}
 		try {
 			$data = json_decode( $raw, false, 512, JSON_THROW_ON_ERROR );
 		} catch ( JsonException $exception ) {
@@ -87,9 +95,6 @@ final class ApiClient implements ApiClientInterface {
 		}
 		if ( ! is_object( $data ) ) {
 			throw new ApiException( 'Endless Aisles returned an invalid JSON object.', array( 'status' => $status ) );
-		}
-		if ( $status < 200 || $status >= 300 ) {
-			throw new ApiException( 'Endless Aisles returned an unsuccessful response.', array( 'status' => $status ), $status );
 		}
 		return get_object_vars( $data );
 	}

@@ -35,6 +35,14 @@ final class Migrator {
 				return false;
 			}
 		}
+		foreach ( Schema::required_columns( $wpdb->prefix ) as $table => $columns ) {
+			foreach ( $columns as $column ) {
+				$found = $wpdb->get_var( $wpdb->prepare( "SHOW COLUMNS FROM {$table} LIKE %s", $wpdb->esc_like( $column ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table names come only from Schema::required_columns().
+				if ( ( isset( $wpdb->last_error ) && '' !== $wpdb->last_error ) || $column !== $found ) {
+					return false;
+				}
+			}
+		}
 		update_option( self::VERSION_OPTION, Schema::VERSION, false );
 		return true;
 	}

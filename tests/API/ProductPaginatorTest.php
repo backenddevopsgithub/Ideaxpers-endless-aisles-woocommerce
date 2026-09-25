@@ -86,7 +86,7 @@ final class ProductPaginatorTest extends TestCase {
 
 	#[DataProvider( 'invalidMetadata' )]
 	public function test_invalid_pagination_metadata_types_are_rejected( string $field, mixed $value ): void {
-		$response = array(
+		$response           = array(
 			'current_page'  => 1,
 			'data'          => array(),
 			'per_page'      => 10,
@@ -110,7 +110,7 @@ final class ProductPaginatorTest extends TestCase {
 			'zero'               => 0,
 			'negative integer'   => -1,
 		);
-		$cases = array();
+		$cases   = array();
 		foreach ( array( 'current_page', 'per_page' ) as $field ) {
 			foreach ( $invalid as $label => $value ) {
 				$cases[ $field . ' ' . $label ] = array( $field, $value );

@@ -18,6 +18,8 @@ final class SettingsValidator {
 		$confirmation = $input['production_confirmed'] ?? null;
 		$confirmed    = 1 === $confirmation || '1' === $confirmation;
 
+		$metadata_keys = $this->metadata_keys( $input['upc_meta_keys'] ?? array() );
+
 		return array(
 			'enabled'              => ! empty( $input['enabled'] ) ? 'yes' : 'no',
 			'environment'          => in_array( $environment, self::ENVIRONMENTS, true ) ? $environment : 'qa',
@@ -26,6 +28,22 @@ final class SettingsValidator {
 			'log_level'            => in_array( $log_level, self::LOG_LEVELS, true ) ? $log_level : 'warning',
 			'alert_email'          => sanitize_email( (string) ( $input['alert_email'] ?? '' ) ),
 			'import_status'        => 'draft',
+			'use_global_unique_id' => ! empty( $input['use_global_unique_id'] ) ? 'yes' : 'no',
+			'upc_meta_keys'        => $metadata_keys,
+			'allow_sku_upc_match'  => ! empty( $input['allow_sku_upc_match'] ) ? 'yes' : 'no',
 		);
+	}
+
+	/** @return list<string> */
+	private function metadata_keys( mixed $input ): array {
+		$values = is_array( $input ) ? $input : preg_split( '/[\r\n,]+/', (string) $input );
+		$result = array();
+		foreach ( false !== $values ? $values : array() as $value ) {
+			$key = trim( (string) $value );
+			if ( '' !== $key && strlen( $key ) <= 191 && 1 === preg_match( '/^[A-Za-z0-9_.:-]+$/', $key ) ) {
+				$result[ $key ] = $key;
+			}
+		}
+		return array_values( $result );
 	}
 }

@@ -12,6 +12,8 @@ Changing WordPress salts invalidates existing ciphertext by design. After rotati
 
 Settings require the `manage_woocommerce` capability and a WordPress nonce. Inputs are allowlisted or sanitized, and all rendered values are escaped. Integration services do not initialize unless WooCommerce is active.
 
+Dry-run start, resume, cancellation, CSV export, and expired-record purge each require `manage_woocommerce` and an action-specific nonce. Remote runs require an enabled QA configuration and a recorded successful QA connection test. Production connection tests never write `ideaxperts_ea_qa_connection_status`. Production is rejected by the catalog service even if Production is otherwise configured. There are no automatic requests during activation or page rendering.
+
 ## Logging
 
 Structured context is recursively redacted by key and inline secret patterns before insertion. Authentication headers are never passed to the logger. `X-EA-REQUEST-TOKEN`, authorization values, API keys, tokens, cookies, sessions, passwords, secrets, payment fields, and customer contact/address fields are redacted; unsupported objects and resources are rejected from context. API response bodies are not logged. The table retains at most 2,000 recent entries; administrators can view the latest 50.
@@ -21,6 +23,12 @@ Structured context is recursively redacted by key and inline secret patterns bef
 Documented base URLs and endpoint paths are committed; credentials are not. The API uses `X-EA-REQUEST-TOKEN` and never Bearer authentication. The connection test sends one explicit, read-only product-list GET, stores no returned product data, and logs neither token nor URL. The API client uses WordPress safe HTTP requests, disables redirects, enforces bounded timeouts, and applies a 5 MiB default response ceiling before JSON decoding. Structured failures exclude response bodies, transport details, URLs, and credentials. QA is the default. Production resolution and request orchestration both require an exact checkbox confirmation, stored as a versioned internal sentinel, in addition to selecting Production.
 
 The release builder copies only an explicit source allowlist into an isolated build directory. It does not read or copy `.env` files, WordPress configuration, Composer authentication files, or environment credentials.
+
+## Catalog and CSV safety
+
+The store scanner calls read-only WooCommerce getters and records only product identity, status/type, administrator display title, configured identifier fields, parent identity, and existing mappings. It never enumerates unrelated metadata. Metadata-key settings are syntax allowlisted and never interpolated into SQL.
+
+Dry-run persistence excludes credentials and raw API bodies. Results include only catalog comparison fields. CSV is streamed directly to the administrator without a permanent file; leading whitespace and control characters are stripped, then cells beginning with `=`, `+`, `-`, or `@` receive a leading apostrophe to prevent formula execution.
 
 ## Reporting issues
 

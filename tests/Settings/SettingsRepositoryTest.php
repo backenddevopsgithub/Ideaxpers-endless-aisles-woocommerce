@@ -49,12 +49,42 @@ final class SettingsRepositoryTest extends TestCase {
 	}
 
 	public function test_repository_fails_closed_for_migrated_confirmation_values(): void {
-		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array( 'environment' => 'production', 'production_confirmed' => 'yes' );
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array(
+			'environment'          => 'production',
+			'production_confirmed' => 'yes',
+		);
 		self::assertSame( 'no', ( new SettingsRepository() )->get( 'production_confirmed' ) );
 	}
 
 	public function test_repository_accepts_only_canonical_stored_confirmation(): void {
-		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array( 'environment' => 'production', 'production_confirmed' => \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED );
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array(
+			'environment'          => 'production',
+			'production_confirmed' => \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED,
+		);
 		self::assertSame( \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED, ( new SettingsRepository() )->get( 'production_confirmed' ) );
+	}
+
+	public function test_replacing_the_qa_token_clears_connection_readiness(): void {
+		$repository = new SettingsRepository();
+		$GLOBALS['ea_test_options']['ideaxperts_ea_qa_connection_status'] = array(
+			'status'    => 'connected',
+			'tested_at' => '2026-09-24 11:00:00',
+		);
+		$repository->replace_token( 'qa', 'new-qa-token' );
+
+		self::assertSame( 'new-qa-token', $repository->token( 'qa' ) );
+		self::assertSame( 'not_tested', $GLOBALS['ea_test_options']['ideaxperts_ea_qa_connection_status']['status'] );
+	}
+
+	public function test_replacing_the_production_token_does_not_clear_qa_readiness(): void {
+		$repository = new SettingsRepository();
+		$GLOBALS['ea_test_options']['ideaxperts_ea_qa_connection_status'] = array(
+			'status'    => 'connected',
+			'tested_at' => '2026-09-24 11:00:00',
+		);
+		$repository->replace_token( 'production', 'new-production-token' );
+
+		self::assertSame( 'new-production-token', $repository->token( 'production' ) );
+		self::assertSame( 'connected', $GLOBALS['ea_test_options']['ideaxperts_ea_qa_connection_status']['status'] );
 	}
 }

@@ -8,7 +8,7 @@
 declare(strict_types=1);
 
 const IDEAXPERTS_EA_RELEASE_SLUG    = 'ideaxperts-endless-aisles';
-const IDEAXPERTS_EA_RELEASE_VERSION = '0.1.0';
+const IDEAXPERTS_EA_RELEASE_VERSION = '0.2.0';
 
 /** Remove a build path without following symbolic links. */
 function ideaxperts_ea_remove_path( string $path, string $allowed_root ): void {

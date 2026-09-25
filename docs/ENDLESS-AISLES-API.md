@@ -1,7 +1,7 @@
 # Endless Aisles API contract notes
 
 Authoritative documentation: <https://docs.endlessaisles.io/>  
-Reviewed: 2026-09-24
+Reviewed: 2026-09-25
 
 This is a concise implementation record, not a replacement for the official documentation.
 
@@ -50,6 +50,14 @@ All API responses use WordPress's transport-level response limit and are rejecte
 - The QA database refreshes daily. Older QA order details may therefore return `404` after order data is cleared.
 - QA inventory is not automatically deducted merely because a test order is placed; fulfillment must be performed manually by Endless Aisles for that test behavior.
 - `custom_order_id`, when supplied, is unique within the retailer account; reusing it produces an error.
+
+## Milestone 2 dry-run usage
+
+Catalog dry runs use only `GET /api/products` against QA with explicit `page` and `per_page=10` on every request, including page 1. Pages are processed sequentially. The implementation limits page number, per-page size, total records, response bytes, redirects, timeouts, attempts, Retry-After delay (30 seconds), and pagination loops. Relative pagination references are reduced to `page` and `per_page` and rebuilt on the known endpoint. Numeric JSON UPC values are rejected because leading zeros may already be lost.
+
+HTTP 429, 5xx, and transport timeouts receive at most three attempts with bounded backoff. Authentication/authorization responses (401/403), validation failures, malformed JSON, oversized responses, and unexpected structures are not retried. Empty `data` lists are valid. Logs contain event names, run/page identities, status, and bounded error classifications—not tokens, request URLs, or bodies.
+
+Only documented product and size fields are retained. `price`, `wholesale`, `minimum_advertised_price`, and `msrp` are inspected for reporting only. No price is calculated or written to WooCommerce.
 
 ## Known documentation ambiguities
 

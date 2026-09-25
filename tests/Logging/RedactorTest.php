@@ -35,7 +35,7 @@ final class RedactorTest extends TestCase {
 	}
 
 	public function test_json_formatted_headers_are_fully_redacted(): void {
-		$token = 'json-token-must-disappear';
+		$token  = 'json-token-must-disappear';
 		$inputs = array(
 			'{"X-EA-REQUEST-TOKEN":"' . $token . '"}',
 			'{ "X-EA-REQUEST-TOKEN" : "' . $token . '" }',

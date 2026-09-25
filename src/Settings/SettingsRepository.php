@@ -20,6 +20,9 @@ final class SettingsRepository {
 			'log_level'            => 'warning',
 			'alert_email'          => '',
 			'import_status'        => 'draft',
+			'use_global_unique_id' => 'yes',
+			'upc_meta_keys'        => array(),
+			'allow_sku_upc_match'  => 'no',
 		);
 		$value    = get_option( self::OPTION, array() );
 		$settings = wp_parse_args( is_array( $value ) ? $value : array(), $defaults );
@@ -46,6 +49,16 @@ final class SettingsRepository {
 			if ( isset( $input[ $field ] ) && '' !== trim( (string) $input[ $field ] ) ) {
 				$credentials[ $environment ] = $cipher->encrypt( trim( (string) $input[ $field ] ) );
 				$changed                     = true;
+				if ( 'qa' === $environment ) {
+					update_option(
+						'ideaxperts_ea_qa_connection_status',
+						array(
+							'status'    => 'not_tested',
+							'tested_at' => '',
+						),
+						false
+					);
+				}
 			}
 		}
 		if ( $changed ) {
@@ -63,6 +76,16 @@ final class SettingsRepository {
 		$credentials                 = is_array( $credentials ) ? $credentials : array();
 		$credentials[ $environment ] = $cipher->encrypt( $token );
 		update_option( self::TOKEN_OPTION, $credentials, false );
+		if ( 'qa' === $environment ) {
+			update_option(
+				'ideaxperts_ea_qa_connection_status',
+				array(
+					'status'    => 'not_tested',
+					'tested_at' => '',
+				),
+				false
+			);
+		}
 	}
 
 	public function token( string $environment ): string {

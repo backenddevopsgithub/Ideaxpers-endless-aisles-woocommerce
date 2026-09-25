@@ -1,6 +1,6 @@
 # IdeaXperts Endless Aisles for WooCommerce
 
-Production-oriented foundation for connecting Small Town Pets' WooCommerce store to Endless Aisles. Milestone 1 establishes secure configuration, persistence, logging, scheduling, and documented API boundaries. It does **not** import products, synchronize inventory, or submit orders.
+Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 2 adds a durable, read-only catalog dry run. It does **not** import or modify products, synchronize inventory, or submit orders.
 
 ## Requirements
 
@@ -14,6 +14,14 @@ Production-oriented foundation for connecting Small Town Pets' WooCommerce store
 Place this repository in `wp-content/plugins/ideaxperts-endless-aisles`, run `composer install --no-dev --classmap-authoritative`, then activate **IdeaXperts Endless Aisles for WooCommerce**. Settings, status, and redacted logs appear under **WooCommerce → Endless Aisles**.
 
 The documented QA and Production base URLs are built in. API requests use `X-EA-REQUEST-TOKEN`; Bearer authentication is not used. QA is the default. Production requests remain blocked unless Production is selected and the separate production safeguard is explicitly confirmed. The connection test is an authenticated, read-only request for one product-list record and stores no response data.
+
+## Catalog dry run
+
+Configure the WooCommerce global unique ID, any additional UPC metadata keys, and (only if explicitly desired) exact SKU-to-UPC matching under **WooCommerce → Endless Aisles → Settings**. Metadata keys accept only letters, numbers, underscores, dots, colons, and hyphens. Numeric SKUs are ignored unless exact SKU matching is enabled.
+
+The **Catalog Dry Run** tab always shows local catalog counts and identifier-field configuration. Starting a remote comparison additionally requires an enabled integration, the QA environment, a configured QA token, and a successful QA connection test. Products and variations are scanned in bounded batches; `GET /api/products` is fetched sequentially at 10 records per page. Action Scheduler jobs are idempotent and resumable, and an active run can be cancelled safely.
+
+Matching identity is: verified existing mapping, one exact normalized UPC, an exact normalized SKU only when enabled, a new-product candidate, or manual review. Titles, descriptions, brands, and prices are never used for identity. Review flags record discontinued, not-purchasable, duplicate, invalid, conflict, ambiguous, and suspicious-price conditions without replacing `already_linked`. Results retain the vendor product-to-options relationship and can be filtered, searched, and exported from a completed run. CSV cells with leading whitespace, control characters, or spreadsheet formula characters are neutralized. No WooCommerce records are changed.
 
 ## Development
 
@@ -37,12 +45,12 @@ Build the deployable plugin ZIP on Windows, macOS, or Linux with:
 composer build-release
 ```
 
-The build stages an explicit allowlist, runs `composer install --no-dev --prefer-dist --optimize-autoloader` inside the isolated staging directory, and creates `build/ideaxperts-endless-aisles-0.1.0.zip`. The ZIP includes the production Composer autoloader and excludes tests, development configuration, Git metadata, caches, local environment files, and source-repository secrets. The ignored `build/` directory can be deleted after inspection.
+The build stages an explicit allowlist, runs `composer install --no-dev --prefer-dist --optimize-autoloader` inside the isolated staging directory, and creates `build/ideaxperts-endless-aisles-0.2.0.zip`. The ZIP includes the production Composer autoloader and excludes tests, development configuration, Git metadata, caches, local environment files, and source-repository secrets. The ignored `build/` directory can be deleted after inspection.
 
 The PHPUnit suite is foundational and uses isolated WordPress function stubs. Full WordPress/WooCommerce integration tests remain future work.
 
 ## Data lifecycle
 
-Deactivation removes only plugin-owned scheduled actions. Settings, encrypted credentials, mappings, logs, synchronization records, and order-submission records remain. There is intentionally no destructive uninstall routine.
+Deactivation removes only plugin-owned scheduled actions, including pending dry-run callbacks. Settings, encrypted credentials, mappings, dry-run reports, logs, synchronization records, and order-submission records remain. There is intentionally no destructive uninstall routine.
 
 See [API contract notes](docs/ENDLESS-AISLES-API.md), [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY.md), and [Changelog](CHANGELOG.md).

@@ -19,6 +19,8 @@ final class InventorySchedulerTest extends TestCase {
 		$GLOBALS['ea_schedule_calls']    = 0;
 		$GLOBALS['ea_schedule_interval'] = 0;
 		$GLOBALS['ea_unschedule_calls']  = 0;
+		$GLOBALS['ea_unschedule_log']    = array();
+		$GLOBALS['ea_action_queue']      = array();
 		$GLOBALS['ea_remote_requests']   = array();
 		$GLOBALS['ea_test_options']      = array(
 			'ideaxperts_ea_settings' => array(
@@ -28,9 +30,9 @@ final class InventorySchedulerTest extends TestCase {
 				'log_level'            => 'critical',
 			),
 		);
-		$this->wpdb      = new SchedulerWpdb();
-		$GLOBALS['wpdb'] = $this->wpdb;
-		$this->settings  = new SettingsRepository();
+		$this->wpdb                      = new SchedulerWpdb();
+		$GLOBALS['wpdb']                 = $this->wpdb;
+		$this->settings                  = new SettingsRepository();
 	}
 
 	protected function tearDown(): void {
@@ -57,10 +59,35 @@ final class InventorySchedulerTest extends TestCase {
 	/** @return array<string,array{array<string,string>,string|null}> */
 	public static function unconfiguredStates(): array {
 		return array(
-			'disabled integration'   => array( array( 'enabled' => 'no', 'environment' => 'qa' ), 'qa' ),
-			'missing credential'     => array( array( 'enabled' => 'yes', 'environment' => 'qa' ), null ),
-			'unconfirmed production' => array( array( 'enabled' => 'yes', 'environment' => 'production', 'production_confirmed' => 'no' ), 'production' ),
-			'invalid environment'    => array( array( 'enabled' => 'yes', 'environment' => 'invalid' ), null ),
+			'disabled integration'   => array(
+				array(
+					'enabled'     => 'no',
+					'environment' => 'qa',
+				),
+				'qa',
+			),
+			'missing credential'     => array(
+				array(
+					'enabled'     => 'yes',
+					'environment' => 'qa',
+				),
+				null,
+			),
+			'unconfirmed production' => array(
+				array(
+					'enabled'              => 'yes',
+					'environment'          => 'production',
+					'production_confirmed' => 'no',
+				),
+				'production',
+			),
+			'invalid environment'    => array(
+				array(
+					'enabled'     => 'yes',
+					'environment' => 'invalid',
+				),
+				null,
+			),
 		);
 	}
 
@@ -68,7 +95,11 @@ final class InventorySchedulerTest extends TestCase {
 	public function test_valid_configuration_has_exactly_one_action_and_records_expected_run( string $environment, string $confirmation ): void {
 		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array_merge(
 			$GLOBALS['ea_test_options']['ideaxperts_ea_settings'],
-			array( 'enabled' => 'yes', 'environment' => $environment, 'production_confirmed' => $confirmation )
+			array(
+				'enabled'              => 'yes',
+				'environment'          => $environment,
+				'production_confirmed' => $confirmation,
+			)
 		);
 		$this->settings->replace_token( $environment, 'configured-token' );
 		$scheduler = $this->scheduler();
@@ -100,9 +131,19 @@ final class InventorySchedulerTest extends TestCase {
 		$this->settings->replace_token( 'qa', 'configured-token' );
 		$scheduler = $this->scheduler();
 
-		$this->settings->save( array( 'enabled' => '1', 'environment' => 'qa' ) );
+		$this->settings->save(
+			array(
+				'enabled'     => '1',
+				'environment' => 'qa',
+			)
+		);
 		$scheduler->ensure_scheduled();
-		$this->settings->save( array( 'enabled' => '1', 'environment' => 'qa' ) );
+		$this->settings->save(
+			array(
+				'enabled'     => '1',
+				'environment' => 'qa',
+			)
+		);
 		$scheduler->ensure_scheduled();
 		self::assertSame( 1, $GLOBALS['ea_schedule_calls'] );
 		self::assertTrue( $GLOBALS['ea_scheduled'] );
@@ -122,7 +163,28 @@ final class InventorySchedulerTest extends TestCase {
 
 		self::assertFalse( $GLOBALS['ea_scheduled'] );
 		self::assertTrue( $GLOBALS['ea_unrelated_scheduled'] );
-		self::assertSame( 1, $GLOBALS['ea_unschedule_calls'] );
+		self::assertSame( 4, $GLOBALS['ea_unschedule_calls'] );
+	}
+
+	public function test_deactivation_unschedules_dry_run_jobs_with_nonempty_arguments(): void {
+		$GLOBALS['ea_action_queue'] = array(
+			array(
+				'hook'  => 'ideaxperts_ea_dry_run_store_batch',
+				'args'  => array( 9, 2 ),
+				'group' => 'ideaxperts-endless-aisles',
+			),
+			array(
+				'hook'  => 'ideaxperts_ea_dry_run_catalog_page',
+				'args'  => array( 9, 4 ),
+				'group' => 'ideaxperts-endless-aisles',
+			),
+		);
+
+		Deactivator::deactivate();
+
+		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
+		self::assertSame( '', $GLOBALS['ea_unschedule_log'][1]['group'] ?? 'missing' );
+		self::assertSame( array(), $GLOBALS['ea_unschedule_log'][1]['args'] ?? array( 'missing' ) );
 	}
 
 	private function scheduler(): InventoryScheduler {
@@ -131,7 +193,9 @@ final class InventorySchedulerTest extends TestCase {
 }
 
 final class SchedulerWpdb {
-	public string $prefix = 'wp_';
+	public string $prefix         = 'wp_';
+	public string $options        = 'wp_options';
+	public int $rows_affected     = 0;
 	/** @var list<array<string,mixed>> */
 	public array $rows = array();
 	/** @var list<string> */
@@ -149,5 +213,14 @@ final class SchedulerWpdb {
 	public function query( string $query ): int {
 		$this->queries[] = $query;
 		return 0;
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function get_results( string $query, mixed $output = null ): array {
+		return array();
+	}
+
+	public function get_var( string $query ): mixed {
+		return null;
 	}
 }

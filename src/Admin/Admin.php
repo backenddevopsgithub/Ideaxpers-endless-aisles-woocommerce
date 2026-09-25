@@ -19,13 +19,15 @@ final class Admin {
 		private readonly SettingsRepository $settings,
 		private readonly DatabaseLogger $logger,
 		private readonly InventoryScheduler $scheduler,
-		private readonly ConnectionTester $connection_tester
+		private readonly ConnectionTester $connection_tester,
+		private readonly CatalogDryRunAdmin $catalog_admin
 	) {}
 
 	public function register(): void {
 		add_action( 'admin_menu', array( $this, 'menu' ) );
 		add_action( 'admin_post_ideaxperts_ea_save_settings', array( $this, 'save_settings' ) );
 		add_action( 'admin_post_ideaxperts_ea_test_connection', array( $this, 'test_connection' ) );
+		$this->catalog_admin->register();
 	}
 
 	public function test_connection(): void {
@@ -88,13 +90,15 @@ final class Admin {
 			return;
 		}
 		$tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'settings';
-		if ( ! in_array( $tab, array( 'settings', 'status', 'logs' ), true ) ) {
+		if ( ! in_array( $tab, array( 'settings', 'catalog', 'status', 'logs' ), true ) ) {
 			$tab = 'settings';
 		}
 		echo '<div class="wrap"><h1>' . esc_html__( 'IdeaXperts Endless Aisles', 'ideaxperts-endless-aisles' ) . '</h1>';
 		$this->render_notices();
 		$this->render_tabs( $tab );
-		if ( 'status' === $tab ) {
+		if ( 'catalog' === $tab ) {
+			$this->catalog_admin->render();
+		} elseif ( 'status' === $tab ) {
 			$this->render_status();
 		} elseif ( 'logs' === $tab ) {
 			$this->render_logs();
@@ -124,6 +128,7 @@ final class Admin {
 	private function render_tabs( string $current ): void {
 		$tabs = array(
 			'settings' => __( 'Settings', 'ideaxperts-endless-aisles' ),
+			'catalog'  => __( 'Catalog Dry Run', 'ideaxperts-endless-aisles' ),
 			'status'   => __( 'Status', 'ideaxperts-endless-aisles' ),
 			'logs'     => __( 'Logs', 'ideaxperts-endless-aisles' ),
 		);
@@ -160,6 +165,9 @@ final class Admin {
 		$this->row( __( 'Logging level', 'ideaxperts-endless-aisles' ), '<select name="settings[log_level]">' . $options . '</select>' );
 		$this->row( __( 'Alert email', 'ideaxperts-endless-aisles' ), '<input type="email" class="regular-text" name="settings[alert_email]" value="' . esc_attr( (string) $settings['alert_email'] ) . '">' );
 		$this->row( __( 'New product status', 'ideaxperts-endless-aisles' ), '<input type="hidden" name="settings[import_status]" value="draft"><strong>' . esc_html__( 'Draft', 'ideaxperts-endless-aisles' ) . '</strong>' );
+		$this->row( __( 'Use global unique ID for UPC matching', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[use_global_unique_id]" value="1" ' . checked( 'yes', $settings['use_global_unique_id'], false ) . '> ' . esc_html__( 'Read WooCommerce global unique IDs', 'ideaxperts-endless-aisles' ) . '</label>' );
+		$this->row( __( 'Additional UPC metadata keys', 'ideaxperts-endless-aisles' ), '<input type="text" class="regular-text" name="settings[upc_meta_keys]" value="' . esc_attr( implode( ',', (array) $settings['upc_meta_keys'] ) ) . '"><p class="description">' . esc_html__( 'Comma-separated metadata keys. Only letters, numbers, underscore, dot, colon, and hyphen are accepted.', 'ideaxperts-endless-aisles' ) . '</p>' );
+		$this->row( __( 'Allow exact SKU-to-UPC matching', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[allow_sku_upc_match]" value="1" ' . checked( 'yes', $settings['allow_sku_upc_match'], false ) . '> ' . esc_html__( 'Disabled by default; compares exact normalized values only', 'ideaxperts-endless-aisles' ) . '</label>' );
 		echo '</table>';
 		submit_button();
 		echo '</form>';

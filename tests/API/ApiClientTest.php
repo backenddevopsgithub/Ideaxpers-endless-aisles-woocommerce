@@ -13,7 +13,7 @@ final class ApiClientTest extends TestCase {
 	private const TOKEN = 'never-log-this-token';
 
 	protected function setUp(): void {
-		$GLOBALS['ea_test_options'] = array( 'ideaxperts_ea_settings' => array( 'log_level' => 'critical' ) );
+		$GLOBALS['ea_test_options']    = array( 'ideaxperts_ea_settings' => array( 'log_level' => 'critical' ) );
 		$GLOBALS['ea_remote_requests'] = array();
 	}
 
@@ -47,7 +47,10 @@ final class ApiClientTest extends TestCase {
 
 	#[DataProvider( 'nonObjectResponses' )]
 	public function test_response_envelope_must_be_a_json_object( string $body ): void {
-		$GLOBALS['ea_remote_response'] = array( 'response' => array( 'code' => 200 ), 'body' => $body );
+		$GLOBALS['ea_remote_response'] = array(
+			'response' => array( 'code' => 200 ),
+			'body'     => $body,
+		);
 		$this->expectException( ApiException::class );
 
 		$this->client()->request( 'GET', '/api/products' );
@@ -88,7 +91,7 @@ final class ApiClientTest extends TestCase {
 	public function test_transport_details_and_credentials_never_reach_logs(): void {
 		$internal_message = 'cURL error 28: operation timed out with ' . self::TOKEN;
 		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['log_level'] = 'debug';
-		$GLOBALS['wpdb'] = new class() {
+		$GLOBALS['wpdb']               = new class() {
 			public string $prefix = 'wp_';
 			/** @var list<array<string,mixed>> */
 			public array $rows = array();

@@ -10,6 +10,7 @@ parameters:
     - ideaxperts-endless-aisles.php
   stubFiles:
     - tests/stubs/action-scheduler.stub
+    - tests/stubs/woocommerce-functions.stub
   excludePaths:
     analyse:
       - vendor

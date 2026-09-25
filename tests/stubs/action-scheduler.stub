@@ -7,4 +7,16 @@ function as_next_scheduled_action( string $hook, array $args = array(), string $
 function as_schedule_recurring_action( int $timestamp, int $interval, string $hook, array $args = array(), string $group = '', bool $unique = false ): int {}
 
 /** @param array<mixed> $args */
-function as_unschedule_all_actions( string $hook, array $args = array(), string $group = '' ): void {}
+function as_unschedule_all_actions( string $hook, array $args = array(), string $group = '' ): int {}
+
+/** @param array<mixed> $args */
+function as_unschedule_action( string $hook, array $args = array(), string $group = '' ): int|null {}
+
+/** @param array<mixed> $args */
+function as_enqueue_async_action( string $hook, array $args = array(), string $group = '', bool $unique = false, int $priority = 10 ): int {}
+
+/**
+ * @param array<string,mixed> $args
+ * @return array<int,object>
+ */
+function as_get_scheduled_actions( array $args = array(), string $return_format = 'OBJECT' ): array {}

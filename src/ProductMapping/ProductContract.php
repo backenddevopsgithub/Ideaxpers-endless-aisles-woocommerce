@@ -49,10 +49,6 @@ final class ProductContract {
 	 *  @return array<string,mixed>
 	 */
 	public static function normalize_size( array $size ): array {
-		$normalized = array_intersect_key( $size, array_flip( self::SIZE_FIELDS ) );
-		if ( array_key_exists( 'upc', $normalized ) && null !== $normalized['upc'] ) {
-			$normalized['upc'] = (string) $normalized['upc'];
-		}
-		return $normalized;
+		return array_intersect_key( $size, array_flip( self::SIZE_FIELDS ) );
 	}
 }

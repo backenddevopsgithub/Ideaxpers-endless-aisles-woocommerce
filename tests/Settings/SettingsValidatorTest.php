@@ -51,7 +51,12 @@ final class SettingsValidatorTest extends TestCase {
 
 	#[DataProvider( 'rejectedConfirmationValues' )]
 	public function test_production_confirmation_rejects_every_other_value( mixed $value ): void {
-		$result = ( new SettingsValidator() )->validate( array( 'environment' => 'production', 'production_confirmed' => $value ) );
+		$result = ( new SettingsValidator() )->validate(
+			array(
+				'environment'          => 'production',
+				'production_confirmed' => $value,
+			)
+		);
 		self::assertSame( 'no', $result['production_confirmed'] );
 	}
 
@@ -73,7 +78,23 @@ final class SettingsValidatorTest extends TestCase {
 	}
 
 	public function test_qa_selection_clears_production_confirmation(): void {
-		$result = ( new SettingsValidator() )->validate( array( 'environment' => 'qa', 'production_confirmed' => 1 ) );
+		$result = ( new SettingsValidator() )->validate(
+			array(
+				'environment'          => 'qa',
+				'production_confirmed' => 1,
+			)
+		);
 		self::assertSame( 'no', $result['production_confirmed'] );
+	}
+
+	public function test_upc_metadata_keys_are_allowlisted_and_deduplicated(): void {
+		$result = ( new SettingsValidator() )->validate(
+			array(
+				'upc_meta_keys'       => "_upc, gtin.value\nunsafe key\n_upc",
+				'allow_sku_upc_match' => '1',
+			)
+		);
+		self::assertSame( array( '_upc', 'gtin.value' ), $result['upc_meta_keys'] );
+		self::assertSame( 'yes', $result['allow_sku_upc_match'] );
 	}
 }
