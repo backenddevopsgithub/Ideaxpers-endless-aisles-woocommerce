@@ -81,16 +81,16 @@ final class ApiClient implements ApiClientInterface {
 			);
 		}
 		try {
-			$data = '' === $raw ? array() : json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
+			$data = json_decode( $raw, false, 512, JSON_THROW_ON_ERROR );
 		} catch ( JsonException $exception ) {
 			throw new ApiException( 'Endless Aisles returned invalid JSON.', array( 'status' => $status ), 0, $exception );
 		}
-		if ( ! is_array( $data ) ) {
+		if ( ! is_object( $data ) ) {
 			throw new ApiException( 'Endless Aisles returned an invalid JSON object.', array( 'status' => $status ) );
 		}
 		if ( $status < 200 || $status >= 300 ) {
 			throw new ApiException( 'Endless Aisles returned an unsuccessful response.', array( 'status' => $status ), $status );
 		}
-		return $data;
+		return get_object_vars( $data );
 	}
 }

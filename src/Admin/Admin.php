@@ -66,7 +66,6 @@ final class Admin {
 		$result = 'saved';
 		try {
 			$this->settings->save( $raw );
-			InventoryScheduler::unschedule_all();
 			$this->scheduler->ensure_scheduled();
 		} catch ( RuntimeException $exception ) {
 			$result = 'encryption_error';

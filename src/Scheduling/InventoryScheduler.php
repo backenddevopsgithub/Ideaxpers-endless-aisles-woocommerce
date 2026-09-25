@@ -21,6 +21,12 @@ final class InventoryScheduler {
 	}
 
 	public function ensure_scheduled(): void {
+		if ( ! $this->configured() ) {
+			if ( $this->is_scheduled() ) {
+				self::unschedule_all();
+			}
+			return;
+		}
 		if ( ! function_exists( 'as_next_scheduled_action' ) || ! function_exists( 'as_schedule_recurring_action' ) ) {
 			return;
 		}
@@ -30,10 +36,7 @@ final class InventoryScheduler {
 	}
 
 	public function handle(): void {
-		$environment        = (string) $this->settings->get( 'environment', 'qa' );
-		$production_blocked = 'production' === $environment && SettingsValidator::PRODUCTION_CONFIRMED !== $this->settings->get( 'production_confirmed', 'no' );
-		if ( 'yes' !== $this->settings->get( 'enabled', 'no' ) || ! $this->settings->token_configured( $environment ) || $production_blocked ) {
-			$this->record_status( 'not_configured', 'Integration or environment credential is not configured.' );
+		if ( ! $this->configured() ) {
 			$this->logger->log( 'info', 'Inventory synchronization skipped: integration is not configured.' );
 			return;
 		}
@@ -53,5 +56,16 @@ final class InventoryScheduler {
 
 	private function record_status( string $status, string $message ): void {
 		( $this->sync_runs ?? new SyncRunRepository() )->record_status( $status, $message );
+	}
+
+	private function configured(): bool {
+		$environment = (string) $this->settings->get( 'environment', 'qa' );
+		if ( 'yes' !== $this->settings->get( 'enabled', 'no' ) || ! in_array( $environment, SettingsValidator::ENVIRONMENTS, true ) ) {
+			return false;
+		}
+		if ( 'production' === $environment && SettingsValidator::PRODUCTION_CONFIRMED !== $this->settings->get( 'production_confirmed', 'no' ) ) {
+			return false;
+		}
+		return '' !== $this->settings->token( $environment );
 	}
 }

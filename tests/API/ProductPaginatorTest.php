@@ -3,6 +3,7 @@ namespace IdeaXperts\EndlessAisles\Tests\API;
 
 use IdeaXperts\EndlessAisles\API\ApiException;
 use IdeaXperts\EndlessAisles\API\ProductPaginator;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ProductPaginatorTest extends TestCase {
@@ -81,5 +82,65 @@ final class ProductPaginatorTest extends TestCase {
 	public function test_page_limit_is_enforced(): void {
 		$this->expectException( ApiException::class );
 		( new ProductPaginator() )->first_path( ProductPaginator::MAX_PAGES + 1, 10 );
+	}
+
+	#[DataProvider( 'invalidMetadata' )]
+	public function test_invalid_pagination_metadata_types_are_rejected( string $field, mixed $value ): void {
+		$response = array(
+			'current_page'  => 1,
+			'data'          => array(),
+			'per_page'      => 10,
+			'next_page_url' => null,
+		);
+		$response[ $field ] = $value;
+		$this->expectException( ApiException::class );
+
+		( new ProductPaginator() )->next_path( $response );
+	}
+
+	/** @return array<string,array{string,mixed}> */
+	public static function invalidMetadata(): array {
+		$invalid = array(
+			'numeric string'     => '1',
+			'whole number float' => 1.0,
+			'fractional float'   => 1.5,
+			'true'               => true,
+			'false'              => false,
+			'null'               => null,
+			'zero'               => 0,
+			'negative integer'   => -1,
+		);
+		$cases = array();
+		foreach ( array( 'current_page', 'per_page' ) as $field ) {
+			foreach ( $invalid as $label => $value ) {
+				$cases[ $field . ' ' . $label ] = array( $field, $value );
+			}
+		}
+		$cases['per_page above limit'] = array( 'per_page', ProductPaginator::MAX_PER_PAGE + 1 );
+		return $cases;
+	}
+
+	#[DataProvider( 'invalidDataValues' )]
+	public function test_data_must_be_a_json_list( mixed $data ): void {
+		$this->expectException( ApiException::class );
+		( new ProductPaginator() )->next_path(
+			array(
+				'current_page' => 1,
+				'data'         => $data,
+				'per_page'     => 10,
+			)
+		);
+	}
+
+	/** @return array<string,array{mixed}> */
+	public static function invalidDataValues(): array {
+		return array(
+			'object'            => array( (object) array() ),
+			'associative array' => array( array( 'id' => 1 ) ),
+			'string'            => array( 'records' ),
+			'integer'           => array( 1 ),
+			'boolean'           => array( false ),
+			'null'              => array( null ),
+		);
 	}
 }

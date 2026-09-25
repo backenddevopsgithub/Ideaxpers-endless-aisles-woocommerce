@@ -32,6 +32,39 @@ final class ApiClientTest extends TestCase {
 		self::assertSame( self::LIMIT, $GLOBALS['ea_remote_requests'][0]['args']['limit_response_size'] );
 	}
 
+	public function test_nested_json_object_and_array_shapes_are_preserved(): void {
+		$GLOBALS['ea_remote_response'] = array(
+			'response' => array( 'code' => 200 ),
+			'body'     => '{"object":{},"list":[],"records":[{"id":1}]}',
+		);
+
+		$response = $this->client()->request( 'GET', '/api/products' );
+
+		self::assertInstanceOf( \stdClass::class, $response['object'] );
+		self::assertSame( array(), $response['list'] );
+		self::assertInstanceOf( \stdClass::class, $response['records'][0] );
+	}
+
+	#[DataProvider( 'nonObjectResponses' )]
+	public function test_response_envelope_must_be_a_json_object( string $body ): void {
+		$GLOBALS['ea_remote_response'] = array( 'response' => array( 'code' => 200 ), 'body' => $body );
+		$this->expectException( ApiException::class );
+
+		$this->client()->request( 'GET', '/api/products' );
+	}
+
+	/** @return array<string,array{string}> */
+	public static function nonObjectResponses(): array {
+		return array(
+			'empty body' => array( '' ),
+			'array'      => array( '[]' ),
+			'null'       => array( 'null' ),
+			'string'     => array( '"text"' ),
+			'integer'    => array( '123' ),
+			'boolean'    => array( 'false' ),
+		);
+	}
+
 	public function test_content_length_exceeding_limit_is_rejected(): void {
 		$GLOBALS['ea_remote_response'] = array(
 			'response' => array( 'code' => 200 ),

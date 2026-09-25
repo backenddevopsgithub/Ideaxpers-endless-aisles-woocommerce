@@ -20,13 +20,14 @@ The documented QA and Production base URLs are built in. API requests use `X-EA-
 ```bash
 composer validate --strict
 composer install --no-interaction --prefer-dist --no-progress
+composer audit --locked --no-interaction
 composer lint
 composer cs
 composer phpstan
 composer test
 ```
 
-These are the same checks used by CI. After dependencies are installed, `composer check` is the equivalent single-command shortcut; it runs strict Composer validation, syntax checks, WordPress coding standards, PHPStan, and PHPUnit using the committed `composer.lock`.
+These are the same checks used by CI. The locked dependency audit fails when Composer reports a known security advisory. After dependencies are installed, `composer check` is the equivalent single-command shortcut for strict Composer validation, syntax checks, WordPress coding standards, PHPStan, and PHPUnit using the committed `composer.lock`; run the audit command separately before release work.
 
 ## Release package
 

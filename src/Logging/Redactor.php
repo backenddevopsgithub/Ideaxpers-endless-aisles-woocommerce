@@ -4,7 +4,9 @@ namespace IdeaXperts\EndlessAisles\Logging;
 defined( 'ABSPATH' ) || exit;
 
 final class Redactor {
-	private const SENSITIVE_KEYS = array(
+	private const MAX_TEXT_LENGTH  = 65536;
+	private const MAX_TOKEN_LENGTH = 4096;
+	private const SENSITIVE_KEYS   = array(
 		'authorization',
 		'x-ea-request-token',
 		'credential',
@@ -49,9 +51,25 @@ final class Redactor {
 			return '[REDACTED]';
 		}
 		if ( is_string( $value ) ) {
-			$value = preg_replace( '/(Bearer\s+)[^\s,]+/i', '$1[REDACTED]', $value ) ?? $value;
-			$value = preg_replace( '/("x-ea-request-token"\s*:\s*)"(?:\\\\.|[^"\\\\])*"/i', '$1"[REDACTED]"', $value ) ?? $value;
-			$value = preg_replace( '/((?:x-ea-request-token|api[_-]?(?:key|token)|access[_-]?token|token|password|secret|session(?:id)?|cookie)\s*[=:]\s*)[^\s,;&]+/i', '$1[REDACTED]', $value ) ?? $value;
+			if ( strlen( $value ) > self::MAX_TEXT_LENGTH && false !== stripos( $value, 'x-ea-request-token' ) ) {
+				return '[REDACTED]';
+			}
+			$value      = preg_replace( '/(Bearer\s+)[^\s,]+/i', '$1[REDACTED]', $value ) ?? $value;
+			$value      = preg_replace( '/("x-ea-request-token"\s*:\s*)"[^"\r\n]{0,' . self::MAX_TOKEN_LENGTH . '}"/i', '$1"[REDACTED]"', $value ) ?? $value;
+			$value      = preg_replace( '/(\\\\+"x-ea-request-token\\\\+"\s*:\s*\\\\+")[^"\r\n]{0,' . self::MAX_TOKEN_LENGTH . '}\\\\+"/i', '$1[REDACTED]\\"', $value ) ?? $value;
+			$value      = preg_replace( '/((?:x-ea-request-token|api[_-]?(?:key|token)|access[_-]?token|token|password|secret|session(?:id)?|cookie)\s*[=:]\s*)[^\s,;&]+/i', '$1[REDACTED]', $value ) ?? $value;
+			$unredacted = preg_replace(
+				array(
+					'/x-ea-request-token\s*[=:]\s*\[REDACTED\]/i',
+					'/"x-ea-request-token"\s*:\s*"\[REDACTED\]"/i',
+					'/\\\\+"x-ea-request-token\\\\+"\s*:\s*\\\\+"\[REDACTED\]\\\\+"/i',
+				),
+				'',
+				$value
+			) ?? $value;
+			if ( false !== stripos( $unredacted, 'x-ea-request-token' ) ) {
+				return '[REDACTED]';
+			}
 			$value = preg_replace( '/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i', '[REDACTED]', $value ) ?? $value;
 			$value = preg_replace( '/\b(?:\d[ -]*?){13,19}\b/', '[REDACTED]', $value ) ?? $value;
 			$value = preg_replace( '/\b(?:\d{1,3}\.){3}\d{1,3}\b/', '[REDACTED]', $value ) ?? $value;

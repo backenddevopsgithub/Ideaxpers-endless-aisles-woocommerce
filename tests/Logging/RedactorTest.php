@@ -51,4 +51,29 @@ final class RedactorTest extends TestCase {
 			self::assertStringContainsString( '[REDACTED]', $redacted );
 		}
 	}
+
+	public function test_escaped_json_headers_are_fully_redacted_recursively(): void {
+		$token   = 'ea-secret-value';
+		$escaped = '{\\"X-EA-REQUEST-TOKEN\\" : \\"' . $token . '\\"}';
+		$inputs  = array(
+			$escaped,
+			'{\\"x-ea-request-token\\":\\"' . $token . '\\"}',
+			array( 'metadata' => $escaped ),
+			array( 'outer' => array( 'serialized' => $escaped ) ),
+		);
+
+		foreach ( $inputs as $input ) {
+			$redacted = Redactor::redact( $input );
+			self::assertStringNotContainsString( $token, serialize( $redacted ) );
+			self::assertStringContainsString( '[REDACTED]', serialize( $redacted ) );
+		}
+	}
+
+	public function test_objects_and_resources_remain_rejected(): void {
+		$resource = fopen( 'php://memory', 'rb' );
+		self::assertIsResource( $resource );
+		self::assertSame( '[REDACTED]', Redactor::redact( (object) array( 'token' => 'secret' ) ) );
+		self::assertSame( '[REDACTED]', Redactor::redact( $resource ) );
+		fclose( $resource );
+	}
 }

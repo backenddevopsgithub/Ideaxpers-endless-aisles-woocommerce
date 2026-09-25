@@ -92,6 +92,16 @@ final class ConnectionTesterTest extends TestCase {
 		self::assertSame( 'unexpected_response', $this->tester()->test()->status );
 	}
 
+	public function test_non_object_response_envelope_is_rejected_generically(): void {
+		( new SettingsRepository() )->replace_token( 'qa', 'qa-secret' );
+		$GLOBALS['ea_remote_response'] = array( 'response' => array( 'code' => 200 ), 'body' => '[]' );
+
+		$result = $this->tester()->test();
+
+		self::assertSame( 'request_failed', $result->status );
+		self::assertSame( 'The connection test failed.', $result->message );
+	}
+
 	#[DataProvider( 'validEnvelopes' )]
 	public function test_valid_zero_or_one_record_envelope_succeeds( string $body ): void {
 		( new SettingsRepository() )->replace_token( 'qa', 'qa-secret' );
@@ -138,7 +148,13 @@ final class ConnectionTesterTest extends TestCase {
 			'per page zero'              => array( '{"current_page":1,"data":[],"per_page":0}' ),
 			'per page negative'          => array( '{"current_page":1,"data":[],"per_page":-1}' ),
 			'per page mismatch'          => array( '{"current_page":1,"data":[],"per_page":2}' ),
+			'data object'                => array( '{"current_page":1,"data":{},"per_page":1}' ),
 			'associative data'           => array( '{"current_page":1,"data":{"secret":"private-response-value"},"per_page":1}' ),
+			'null item'                  => array( '{"current_page":1,"data":[null],"per_page":1}' ),
+			'string item'                => array( '{"current_page":1,"data":["private-response-value"],"per_page":1}' ),
+			'integer item'               => array( '{"current_page":1,"data":[123],"per_page":1}' ),
+			'boolean item'               => array( '{"current_page":1,"data":[false],"per_page":1}' ),
+			'array item'                 => array( '{"current_page":1,"data":[[]],"per_page":1}' ),
 			'more than one record'       => array( '{"current_page":1,"data":[{},{}],"per_page":1}' ),
 			'data is string'             => array( '{"current_page":1,"data":"private-response-value","per_page":1}' ),
 		);

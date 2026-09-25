@@ -7,11 +7,13 @@ define( 'SECURE_AUTH_KEY', 'unit-test-secure-auth-key-with-entropy-0002' );
 define( 'LOGGED_IN_KEY', 'unit-test-logged-in-key-with-entropy-0003' );
 define( 'NONCE_KEY', 'unit-test-nonce-key-with-sufficient-entropy-0004' );
 define( 'MINUTE_IN_SECONDS', 60 );
+define( 'DAY_IN_SECONDS', 86400 );
 
 $GLOBALS['ea_test_options']    = array();
 $GLOBALS['ea_scheduled']       = false;
 $GLOBALS['ea_schedule_calls']  = 0;
 $GLOBALS['ea_schedule_interval'] = 0;
+$GLOBALS['ea_unschedule_calls'] = 0;
 $GLOBALS['ea_remote_response'] = array(
 	'response' => array( 'code' => 200 ),
 	'body'     => '{}',
@@ -87,6 +89,12 @@ function as_schedule_recurring_action( int $timestamp, int $interval, string $ho
 	$GLOBALS['ea_scheduled']        = true;
 	$GLOBALS['ea_schedule_interval'] = $interval;
 	return 123;
+}
+function as_unschedule_all_actions( string $hook, array $args = array(), string $group = '' ): void {
+	if ( 'ideaxperts_ea_inventory_sync' === $hook && 'ideaxperts-endless-aisles' === $group ) {
+		++$GLOBALS['ea_unschedule_calls'];
+		$GLOBALS['ea_scheduled'] = false;
+	}
 }
 
 require dirname( __DIR__ ) . '/vendor/autoload.php';

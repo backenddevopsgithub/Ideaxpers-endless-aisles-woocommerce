@@ -44,15 +44,16 @@ final class ConnectionTester {
 				&& 1 === $response['per_page']
 				&& is_array( $response['data'] )
 				&& array_is_list( $response['data'] )
-				&& count( $response['data'] ) <= 1;
+				&& ( array() === $response['data'] || ( 1 === count( $response['data'] ) && is_object( $response['data'][0] ) ) );
 			if ( ! $valid_envelope ) {
 				return new ConnectionTestResult( false, 'unexpected_response', __( 'Endless Aisles returned an unexpected product-list structure.', 'ideaxperts-endless-aisles' ) );
 			}
 			return new ConnectionTestResult( true, 'connected', __( 'Authenticated read-only connection succeeded.', 'ideaxperts-endless-aisles' ) );
 		} catch ( ApiException $exception ) {
 			$this->logger->log( 'warning', 'Endless Aisles connection test failed.', $exception->context() );
-			$status = str_contains( strtolower( $exception->getMessage() ), 'timed out' ) ? 'timeout' : 'request_failed';
-			return new ConnectionTestResult( false, $status, $exception->getMessage() );
+			$status  = str_contains( strtolower( $exception->getMessage() ), 'timed out' ) ? 'timeout' : 'request_failed';
+			$message = 'timeout' === $status ? __( 'The connection test timed out.', 'ideaxperts-endless-aisles' ) : __( 'The connection test failed.', 'ideaxperts-endless-aisles' );
+			return new ConnectionTestResult( false, $status, $message );
 		}
 	}
 }

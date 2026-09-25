@@ -20,11 +20,22 @@ final class ProductPaginator {
 	 * @param array<string,mixed> $response Documented product-list response.
 	 */
 	public function next_path( array $response ): ?string {
-		if ( ! isset( $response['current_page'], $response['data'], $response['per_page'] ) || ! is_numeric( $response['current_page'] ) || ! is_array( $response['data'] ) || ! is_numeric( $response['per_page'] ) ) {
+		if (
+			! array_key_exists( 'current_page', $response )
+			|| ! array_key_exists( 'data', $response )
+			|| ! array_key_exists( 'per_page', $response )
+			|| ! is_int( $response['current_page'] )
+			|| $response['current_page'] < 1
+			|| ! is_int( $response['per_page'] )
+			|| $response['per_page'] < 1
+			|| $response['per_page'] > self::MAX_PER_PAGE
+			|| ! is_array( $response['data'] )
+			|| ! array_is_list( $response['data'] )
+		) {
 			throw new ApiException( 'Endless Aisles returned an invalid pagination structure.' );
 		}
-		$current_page = (int) $response['current_page'];
-		if ( $current_page < 1 || $current_page > self::MAX_PAGES || isset( $this->visited_pages[ $current_page ] ) ) {
+		$current_page = $response['current_page'];
+		if ( $current_page > self::MAX_PAGES || isset( $this->visited_pages[ $current_page ] ) ) {
 			throw new ApiException( 'Endless Aisles pagination loop detected.' );
 		}
 		$this->visited_pages[ $current_page ] = true;
@@ -53,7 +64,7 @@ final class ProductPaginator {
 			throw new ApiException( 'Endless Aisles returned unsupported pagination parameters.' );
 		}
 		$next_page = isset( $query['page'] ) ? $this->positive_integer_parameter( $query['page'] ) : $current_page + 1;
-		$per_page  = isset( $query['per_page'] ) ? $this->positive_integer_parameter( $query['per_page'] ) : (int) $response['per_page'];
+		$per_page  = isset( $query['per_page'] ) ? $this->positive_integer_parameter( $query['per_page'] ) : $response['per_page'];
 		if ( isset( $this->visited_pages[ $next_page ] ) ) {
 			throw new ApiException( 'Endless Aisles pagination loop detected.' );
 		}
