@@ -26,7 +26,7 @@
   },
   "scripts": {
     "composer-validate": "composer validate --strict",
-    "lint": "php -l ideaxperts-endless-aisles.php && php -r \"foreach(['src','tests','tools'] as $dir){foreach(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir)) as $f){if($f->getExtension()==='php'){passthru('php -l '.escapeshellarg($f),$e);if($e)exit($e);}}}\"",
+    "lint": "@php tools/lint.php",
     "cs": "phpcs",
     "phpstan": "phpstan analyse --memory-limit=1G",
     "test": "phpunit",
