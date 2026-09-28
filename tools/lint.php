@@ -23,6 +23,11 @@ function ideaxperts_ea_lint_is_generated_file( string $file_name ): bool {
  * @return list<string>
  */
 function ideaxperts_ea_lint_collect_files( string $root ): array {
+	$requested_root = rtrim( $root, '/\\' );
+	$resolved_root  = realpath( $root );
+	if ( false !== $resolved_root ) {
+		$root = $resolved_root;
+	}
 	$files      = array();
 	$entry_file = $root . DIRECTORY_SEPARATOR . 'ideaxperts-endless-aisles.php';
 	$scan_paths = array( 'src', 'tests', 'tools' );
@@ -36,7 +41,7 @@ function ideaxperts_ea_lint_collect_files( string $root ): array {
 	if ( false === $entry_realpath ) {
 		throw new RuntimeException( 'Could not resolve lint target: ideaxperts-endless-aisles.php' );
 	}
-	$files[ str_replace( '\\', '/', $entry_realpath ) ] = $entry_realpath;
+	$files[ str_replace( '\\', '/', $entry_realpath ) ] = $requested_root . DIRECTORY_SEPARATOR . 'ideaxperts-endless-aisles.php';
 
 	foreach ( $scan_paths as $scan_path ) {
 		$directory_path = $root . DIRECTORY_SEPARATOR . $scan_path;
@@ -70,7 +75,8 @@ function ideaxperts_ea_lint_collect_files( string $root ): array {
 			}
 
 			// Keying by the normalized real path prevents duplicate lint runs, including this file.
-			$files[ str_replace( '\\', '/', $realpath ) ] = $realpath;
+			$relative                                     = substr( $realpath, strlen( rtrim( $root, '/\\' ) ) + 1 );
+			$files[ str_replace( '\\', '/', $realpath ) ] = $requested_root . DIRECTORY_SEPARATOR . $relative;
 		}
 	}
 

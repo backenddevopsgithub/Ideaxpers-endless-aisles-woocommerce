@@ -6,30 +6,63 @@ final class DryRunMemoryWpdb {
 	public string $options    = 'wp_options';
 	public int $insert_id     = 0;
 	public int $rows_affected = 0;
+	public string $last_error = '';
+	/** @var list<string> */
+	public array $queries = array();
+	/** @var array<string,list<array<string,mixed>>>|null */
+	private ?array $transaction_snapshot = null;
+	public string $fail_operation        = '';
+	public string $fail_query_contains   = '';
+	public string $fail_read_contains    = '';
+	public int $fail_read_after          = -1;
+	private int $matching_read_calls     = 0;
+	public int $fail_replace_after       = -1;
+	private int $replace_calls           = 0;
+	/** @var callable|null */
+	public $after_lock_insert = null;
 	/** @var array<string,list<array<string,mixed>>> */
-	public array $tables      = array();
+	public array $tables = array();
 
 	public function __construct() {
 		$this->tables = array(
 			'wp_ideaxperts_ea_dry_runs'          => array(),
 			'wp_ideaxperts_ea_dry_run_items'     => array(),
 			'wp_ideaxperts_ea_store_identifiers' => array(),
+			'wp_ideaxperts_ea_dry_run_actions'   => array(),
 			'wp_ideaxperts_ea_mappings'          => array(),
 			'wp_options'                         => array(),
 		);
 	}
 
 	/** @param array<string,mixed> $data @param list<string>|null $formats */
-	public function insert( string $table, array $data, ?array $formats = null ): int {
+	public function insert( string $table, array $data, ?array $formats = null ): int|false {
+		if ( 'insert' === $this->fail_operation ) {
+			return false;
+		}
+		if ( str_contains( $table, 'dry_run_actions' ) ) {
+			foreach ( $this->tables[ $table ] as $row ) {
+				if ( (int) $row['run_id'] === (int) $data['run_id'] &&
+					(int) $row['claim_generation'] === (int) $data['claim_generation'] &&
+					(string) $row['action_type'] === (string) $data['action_type'] &&
+					(int) $row['page_number'] === (int) $data['page_number'] ) {
+					$this->last_error = 'Duplicate entry';
+					return false;
+				}
+			}
+		}
 		++$this->insert_id;
-		$data['id']                 = $this->insert_id;
-		$this->tables[ $table ][]   = $data;
-		$this->rows_affected        = 1;
+		$data['id']               = $this->insert_id;
+		$this->tables[ $table ][] = $data;
+		$this->rows_affected      = 1;
 		return 1;
 	}
 
 	/** @param array<string,mixed> $data */
-	public function replace( string $table, array $data ): int {
+	public function replace( string $table, array $data ): int|false {
+		++$this->replace_calls;
+		if ( 'replace' === $this->fail_operation || ( $this->fail_replace_after >= 0 && $this->replace_calls > $this->fail_replace_after ) ) {
+			return false;
+		}
 		$keys = str_contains( $table, 'dry_run_items' )
 			? array( 'run_id', 'ea_product_id', 'ea_option_id' )
 			: array( 'run_id', 'wc_product_id', 'wc_variation_id', 'identifier_type', 'identifier_source' );
@@ -51,7 +84,14 @@ final class DryRunMemoryWpdb {
 	}
 
 	/** @param array<string,mixed> $data @param array<string,mixed> $where */
-	public function update( string $table, array $data, array $where, mixed $format = null, mixed $where_format = null ): int {
+	public function update( string $table, array $data, array $where, mixed $format = null, mixed $where_format = null ): int|false {
+		if ( 'update' === $this->fail_operation ) {
+			return false;
+		}
+		if ( '' !== $this->fail_query_contains && 'action_scheduler_id' === $this->fail_query_contains && array_key_exists( 'action_scheduler_id', $data ) ) {
+			$this->last_error = 'Injected query failure.';
+			return false;
+		}
 		$count = 0;
 		foreach ( $this->tables[ $table ] as $index => $row ) {
 			if ( ! $this->matches_array( $row, $where ) ) {
@@ -65,8 +105,11 @@ final class DryRunMemoryWpdb {
 	}
 
 	/** @param array<string,mixed> $where */
-	public function delete( string $table, array $where, mixed $where_format = null ): int {
-		$kept = array();
+	public function delete( string $table, array $where, mixed $where_format = null ): int|false {
+		if ( 'delete' === $this->fail_operation ) {
+			return false;
+		}
+		$kept  = array();
 		$count = 0;
 		foreach ( $this->tables[ $table ] as $row ) {
 			if ( $this->matches_array( $row, $where ) ) {
@@ -101,9 +144,36 @@ final class DryRunMemoryWpdb {
 		return addcslashes( $value, '_%\\' );
 	}
 
-	public function query( string $sql ): int {
-		$sql = trim( $sql );
-		if ( in_array( $sql, array( 'START TRANSACTION', 'COMMIT', 'ROLLBACK' ), true ) ) {
+	public function query( string $sql ): int|false {
+		$sql              = trim( $sql );
+		$this->queries[]  = $sql;
+		$this->last_error = '';
+		if ( '' !== $this->fail_query_contains && str_contains( $sql, $this->fail_query_contains ) ) {
+			$this->last_error = 'Injected query failure.';
+			return false;
+		}
+		if ( 'START TRANSACTION' === $sql ) {
+			if ( 'start' === $this->fail_operation ) {
+				return false;
+			}
+			$this->transaction_snapshot = $this->tables;
+			return 0;
+		}
+		if ( 'COMMIT' === $sql ) {
+			if ( 'commit' === $this->fail_operation ) {
+				return false;
+			}
+			$this->transaction_snapshot = null;
+			return 0;
+		}
+		if ( 'ROLLBACK' === $sql ) {
+			if ( 'rollback' === $this->fail_operation ) {
+				return false;
+			}
+			if ( null !== $this->transaction_snapshot ) {
+				$this->tables = $this->transaction_snapshot;
+			}
+			$this->transaction_snapshot = null;
 			return 0;
 		}
 		if ( 1 === preg_match( '/^INSERT INTO (\S+) \(option_name, option_value, autoload\) VALUES \((NULL|\'(?:\\\\\'|[^\'])*\'), (NULL|\'(?:\\\\\'|[^\'])*\'), (NULL|\'(?:\\\\\'|[^\'])*\')\)$/', $sql, $insert ) ) {
@@ -121,7 +191,10 @@ final class DryRunMemoryWpdb {
 				'option_value' => $value,
 				'autoload'     => trim( $insert[4], "'" ),
 			);
-			$this->rows_affected = 1;
+			$this->rows_affected          = 1;
+			if ( is_callable( $this->after_lock_insert ) ) {
+				( $this->after_lock_insert )();
+			}
 			return 1;
 		}
 		if ( 1 === preg_match( '/^UPDATE (\S+) SET option_value = (NULL|\'(?:\\\\\'|[^\'])*\') WHERE option_name = (NULL|\'(?:\\\\\'|[^\'])*\') AND option_value = (NULL|\'(?:\\\\\'|[^\'])*\')$/', $sql, $update ) ) {
@@ -195,6 +268,11 @@ final class DryRunMemoryWpdb {
 
 	/** @return array<string,mixed>|null|string|int */
 	public function get_var( string $sql ): mixed {
+		$this->last_error = '';
+		if ( $this->should_fail_read( $sql ) ) {
+			$this->last_error = 'Injected read failure.';
+			return null;
+		}
 		if ( str_contains( $sql, 'COUNT(*)' ) ) {
 			return count( $this->select_rows( $sql ) );
 		}
@@ -211,13 +289,24 @@ final class DryRunMemoryWpdb {
 
 	/** @return array<string,mixed>|null */
 	public function get_row( string $sql, mixed $output = null ): ?array {
+		$this->last_error = '';
+		if ( $this->should_fail_read( $sql ) ) {
+			$this->last_error = 'Injected read failure.';
+			return null;
+		}
 		$rows = $this->select_rows( $sql );
 		return $rows[0] ?? null;
 	}
 
 	/** @return list<array<string,mixed>> */
 	public function get_results( string $sql, mixed $output = null ): array {
-		$rows = $this->select_rows( $sql );
+		$this->last_error = '';
+		if ( $this->should_fail_read( $sql ) ) {
+			$this->last_error = 'Injected read failure.';
+			return array();
+		}
+		$this->queries[] = $sql;
+		$rows            = $this->select_rows( $sql );
 		if ( str_contains( $sql, 'GROUP BY classification' ) ) {
 			$counts = array();
 			foreach ( $rows as $row ) {
@@ -251,9 +340,20 @@ final class DryRunMemoryWpdb {
 		return $rows;
 	}
 
+	private function should_fail_read( string $sql ): bool {
+		if ( '' === $this->fail_read_contains || ! str_contains( $sql, $this->fail_read_contains ) ) {
+			return false;
+		}
+		++$this->matching_read_calls;
+		return $this->fail_read_after < 0 || $this->matching_read_calls > $this->fail_read_after;
+	}
+
 	/** @return list<array<string,mixed>> */
 	private function select_rows( string $sql ): array {
 		$sql = preg_replace( '/\s+FOR UPDATE$/', '', trim( $sql ) ) ?? $sql;
+		if ( str_contains( $sql, 'COALESCE(r.completed_at,r.updated_at)' ) ) {
+			return $this->purge_rows( $sql );
+		}
 		if ( str_contains( $sql, 'INNER JOIN' ) ) {
 			return $this->select_joined_items( $sql );
 		}
@@ -269,7 +369,13 @@ final class DryRunMemoryWpdb {
 				)
 			);
 		}
-		if ( 1 === preg_match( '/ORDER BY id (ASC|DESC)/', $sql, $order ) ) {
+		if ( 1 === preg_match( '/ORDER BY (lease_expires_at|dispatch_lease_expires_at) ASC, id ASC/', $sql, $order ) ) {
+			$column = $order[1];
+			usort(
+				$rows,
+				static fn( array $left, array $right ): int => array( (string) $left[ $column ], (int) $left['id'] ) <=> array( (string) $right[ $column ], (int) $right['id'] )
+			);
+		} elseif ( 1 === preg_match( '/ORDER BY id (ASC|DESC)/', $sql, $order ) ) {
 			usort(
 				$rows,
 				static function ( array $left, array $right ) use ( $order ): int {
@@ -289,6 +395,42 @@ final class DryRunMemoryWpdb {
 			$rows = array_slice( $rows, $offset, $limit );
 		}
 		return $rows;
+	}
+
+	/** @return list<array<string,mixed>> */
+	private function purge_rows( string $sql ): array {
+		$rows   = $this->tables['wp_ideaxperts_ea_dry_runs'];
+		$latest = array();
+		foreach ( $rows as $row ) {
+			if ( 'completed' === (string) ( $row['status'] ?? '' ) ) {
+				$environment            = (string) ( $row['environment'] ?? 'qa' );
+				$latest[ $environment ] = max( (int) ( $latest[ $environment ] ?? 0 ), (int) $row['id'] );
+			}
+		}
+		preg_match_all( "/r\.status = '([^']+)' AND COALESCE\(r\.completed_at,r\.updated_at\) < '([^']+)'/", $sql, $matches, PREG_SET_ORDER );
+		$cutoffs = array();
+		foreach ( $matches as $match ) {
+			$cutoffs[ $match[1] ] = $match[2];
+		}
+		$eligible = array_values(
+			array_filter(
+				$rows,
+				static function ( array $row ) use ( $cutoffs, $latest ): bool {
+					$status = (string) ( $row['status'] ?? '' );
+					$anchor = (string) ( $row['completed_at'] ?? $row['updated_at'] ?? '' );
+					if ( ! isset( $cutoffs[ $status ] ) || $anchor >= $cutoffs[ $status ] ) {
+						return false;
+					}
+					return 'completed' !== $status || (int) $row['id'] !== (int) ( $latest[ (string) ( $row['environment'] ?? 'qa' ) ] ?? 0 );
+				}
+			)
+		);
+		usort( $eligible, static fn( array $left, array $right ): int => (int) $left['id'] <=> (int) $right['id'] );
+		$limit = 1;
+		if ( 1 === preg_match( '/LIMIT (\d+)$/', $sql, $limit_match ) ) {
+			$limit = (int) $limit_match[1];
+		}
+		return array_slice( $eligible, 0, $limit );
 	}
 
 	/** @return list<array<string,mixed>> */
@@ -388,9 +530,36 @@ final class DryRunMemoryWpdb {
 			);
 			return in_array( (string) ( $row[ $in[1] ] ?? '' ), $values, true );
 		}
+		if ( 1 === preg_match( '/^(\w+) IS NOT NULL$/', $condition, $not_null ) ) {
+			return null !== ( $row[ $not_null[1] ] ?? null );
+		}
+		if ( 1 === preg_match( '/^(\w+) <> (NULL|\'(?:\\\\\'|[^\'])*\')$/', $condition, $not_equals ) ) {
+			$expected = 'NULL' === $not_equals[2] ? '' : trim( $not_equals[2], "'" );
+			return (string) ( $row[ $not_equals[1] ] ?? '' ) !== $expected;
+		}
 		if ( 1 === preg_match( '/^(\w+) = (NULL|\'(?:\\\\\'|[^\'])*\'|-?\d+)$/', $condition, $equals ) ) {
 			$expected = 'NULL' === $equals[2] ? '' : trim( $equals[2], "'" );
 			return (string) ( $row[ $equals[1] ] ?? '' ) === $expected;
+		}
+		if ( 1 === preg_match( '/^(\w+)\s*(>=|<=|>|<)\s*(\d+)$/', $condition, $comparison ) ) {
+			$actual   = (int) ( $row[ $comparison[1] ] ?? 0 );
+			$expected = (int) $comparison[3];
+			return match ( $comparison[2] ) {
+				'>=' => $actual >= $expected,
+				'<=' => $actual <= $expected,
+				'>'  => $actual > $expected,
+				'<'  => $actual < $expected,
+			};
+		}
+		if ( 1 === preg_match( '/^(\w+)\s*(>=|<=|>|<)\s*\'(.*)\'$/', $condition, $comparison ) ) {
+			$actual   = (string) ( $row[ $comparison[1] ] ?? '' );
+			$expected = stripslashes( $comparison[3] );
+			return match ( $comparison[2] ) {
+				'>=' => $actual >= $expected,
+				'<=' => $actual <= $expected,
+				'>'  => $actual > $expected,
+				'<'  => $actual < $expected,
+			};
 		}
 		return true;
 	}

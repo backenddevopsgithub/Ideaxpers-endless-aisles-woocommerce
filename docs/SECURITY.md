@@ -12,7 +12,7 @@ Changing WordPress salts invalidates existing ciphertext by design. After rotati
 
 Settings require the `manage_woocommerce` capability and a WordPress nonce. Inputs are allowlisted or sanitized, and all rendered values are escaped. Integration services do not initialize unless WooCommerce is active.
 
-Dry-run start, resume, cancellation, CSV export, and expired-record purge each require `manage_woocommerce` and an action-specific nonce. Remote runs require an enabled QA configuration and a recorded successful QA connection test. Production connection tests never write `ideaxperts_ea_qa_connection_status`. Production is rejected by the catalog service even if Production is otherwise configured. There are no automatic requests during activation or page rendering.
+Dry-run start, resume, cancellation, CSV export, and expired-record purge each require `manage_woocommerce` and an action-specific nonce. Cancellation nonces are bound to the displayed run ID and immutable claim generation, so a stale form cannot cancel a resumed claim. Cryptographic claim and intent tokens are stored server-side and passed only to background jobs; they are never rendered in administrator HTML or logs. Remote runs require an enabled QA configuration and a recorded successful QA connection test. Production connection tests never write `ideaxperts_ea_qa_connection_status`. Production is rejected by the catalog service even if Production is otherwise configured. Reconciliation performs no Endless Aisles network request.
 
 ## Logging
 
@@ -29,6 +29,8 @@ The release builder copies only an explicit source allowlist into an isolated bu
 The store scanner calls read-only WooCommerce getters and records only product identity, status/type, administrator display title, configured identifier fields, parent identity, and existing mappings. It never enumerates unrelated metadata. Metadata-key settings are syntax allowlisted and never interpolated into SQL.
 
 Dry-run persistence excludes credentials and raw API bodies. Results include only catalog comparison fields. CSV is streamed directly to the administrator without a permanent file; leading whitespace and control characters are stripped, then cells beginning with `=`, `+`, `-`, or `@` receive a leading apostrophe to prevent formula execution.
+
+Dry-run workflow state and its scheduling outbox use verified InnoDB tables. Action Scheduler storage is replaceable and is treated as an external system: committed intents are dispatched after the plugin transaction, ambiguous dispatches are reconciled by exact arguments, and cancellation is not terminal until matching actions have been verified absent.
 
 ## Reporting issues
 

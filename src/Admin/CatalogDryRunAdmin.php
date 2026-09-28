@@ -52,9 +52,10 @@ final class CatalogDryRunAdmin {
 	}
 
 	public function cancel(): void {
-		$this->authorize( 'ideaxperts_ea_cancel_dry_run' );
-		$this->manager->cancel( $this->posted_run_id() );
-		$this->redirect( 'cancelled' );
+		$run_id     = $this->posted_run_id();
+		$generation = $this->posted_claim_generation();
+		$this->authorize( 'ideaxperts_ea_cancel_dry_run_' . $run_id . '_' . $generation );
+		$this->redirect( $this->manager->cancel( $run_id, $generation ) ? 'cancelled' : 'cancelling' );
 	}
 
 	public function purge(): void {
@@ -115,7 +116,7 @@ final class CatalogDryRunAdmin {
 		}
 		if ( $active ) {
 			echo '<h2>' . esc_html__( 'Current progress', 'ideaxperts-endless-aisles' ) . '</h2><p>' . esc_html( sprintf( 'Run #%d — %s — store page %d — API page %d — heartbeat %s', $active_id, $active['status'], $active['current_store_page'], $active['current_api_page'], (string) ( $active['last_heartbeat_at'] ?? '' ) ) ) . '</p>';
-			$this->action_form( 'ideaxperts_ea_cancel_dry_run', 'Cancel active dry run', $active_id, false );
+			$this->action_form( 'ideaxperts_ea_cancel_dry_run', 'Cancel active dry run', $active_id, false, (int) ( $active['claim_generation'] ?? 0 ) );
 		} else {
 			$this->action_form( 'ideaxperts_ea_start_dry_run', 'Start catalog dry run', 0, ! $ready );
 			if ( ! $ready ) {
@@ -187,12 +188,20 @@ final class CatalogDryRunAdmin {
 		return isset( $_POST['run_id'] ) ? absint( $_POST['run_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Caller verifies the action-specific nonce first.
 	}
 
-	private function action_form( string $action, string $label, int $run_id, bool $disabled ): void {
+	private function posted_claim_generation(): int {
+		return isset( $_POST['claim_generation'] ) ? absint( $_POST['claim_generation'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- The caller binds and verifies the nonce with this value.
+	}
+
+	private function action_form( string $action, string $label, int $run_id, bool $disabled, int $claim_generation = 0 ): void {
 		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="' . esc_attr( $action ) . '">';
 		if ( $run_id ) {
 			echo '<input type="hidden" name="run_id" value="' . esc_attr( (string) $run_id ) . '">';
 		}
-		wp_nonce_field( $action );
+		if ( $claim_generation > 0 ) {
+			echo '<input type="hidden" name="claim_generation" value="' . esc_attr( (string) $claim_generation ) . '">';
+		}
+		$nonce_action = 'ideaxperts_ea_cancel_dry_run' === $action ? $action . '_' . $run_id . '_' . $claim_generation : $action;
+		wp_nonce_field( $nonce_action );
 		submit_button( $label, 'secondary', 'submit', false, $disabled ? array( 'disabled' => 'disabled' ) : array() );
 		echo '</form>';
 	}

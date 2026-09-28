@@ -2,11 +2,16 @@
 namespace IdeaXperts\EndlessAisles\Core;
 
 use IdeaXperts\EndlessAisles\Database\Migrator;
+use IdeaXperts\EndlessAisles\Database\DryRunRepository;
 
 defined( 'ABSPATH' ) || exit;
 
 final class Activator {
 	public static function activate(): void {
+		$runs = new DryRunRepository();
+		if ( ! $runs->reconcile_activation_placeholder() ) {
+			return;
+		}
 		( new Migrator() )->migrate();
 		if ( false === get_option( 'ideaxperts_ea_settings', false ) ) {
 			add_option(

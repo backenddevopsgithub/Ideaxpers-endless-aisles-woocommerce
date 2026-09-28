@@ -10,24 +10,27 @@ define( 'MINUTE_IN_SECONDS', 60 );
 define( 'DAY_IN_SECONDS', 86400 );
 define( 'ARRAY_A', 'ARRAY_A' );
 
-$GLOBALS['ea_test_options']      = array();
-$GLOBALS['ea_scheduled']         = false;
-$GLOBALS['ea_schedule_calls']    = 0;
-$GLOBALS['ea_schedule_interval'] = 0;
-$GLOBALS['ea_unschedule_calls']  = 0;
-$GLOBALS['ea_unschedule_log']    = array();
-$GLOBALS['ea_action_queue']      = array();
-$GLOBALS['ea_now']               = '2026-09-24 12:00:00';
-$GLOBALS['ea_wc_products']       = array();
-$GLOBALS['ea_wc_product_map']    = array();
-$GLOBALS['ea_wc_writes']         = array();
-$GLOBALS['ea_wc_max_pages']      = 1;
-$GLOBALS['ea_wc_reads']          = array();
-$GLOBALS['ea_remote_response']   = array(
+$GLOBALS['ea_test_options']       = array();
+$GLOBALS['ea_scheduled']          = false;
+$GLOBALS['ea_schedule_calls']     = 0;
+$GLOBALS['ea_schedule_interval']  = 0;
+$GLOBALS['ea_unschedule_calls']   = 0;
+$GLOBALS['ea_unschedule_log']     = array();
+$GLOBALS['ea_action_queue']       = array();
+$GLOBALS['ea_enqueue_failure']    = false;
+$GLOBALS['ea_unschedule_failure'] = false;
+$GLOBALS['ea_add_option_failure'] = false;
+$GLOBALS['ea_now']                = '2026-09-24 12:00:00';
+$GLOBALS['ea_wc_products']        = array();
+$GLOBALS['ea_wc_product_map']     = array();
+$GLOBALS['ea_wc_writes']          = array();
+$GLOBALS['ea_wc_max_pages']       = 1;
+$GLOBALS['ea_wc_reads']           = array();
+$GLOBALS['ea_remote_response']    = array(
 	'response' => array( 'code' => 200 ),
 	'body'     => '{}',
 );
-$GLOBALS['ea_remote_requests']   = array();
+$GLOBALS['ea_remote_requests']    = array();
 
 if ( ! class_exists( 'WP_Error' ) ) {
 	class WP_Error {
@@ -51,6 +54,9 @@ function update_option( string $key, mixed $value, bool $autoload = false ): boo
 	$GLOBALS['ea_test_options'][ $key ] = $value;
 	return true; }
 function add_option( string $key, mixed $value, string $deprecated = '', bool $autoload = true ): bool {
+	if ( ! empty( $GLOBALS['ea_add_option_failure'] ) ) {
+		return false;
+	}
 	if ( array_key_exists( $key, $GLOBALS['ea_test_options'] ) ) {
 		return false;
 	} $GLOBALS['ea_test_options'][ $key ] = $value;
@@ -103,6 +109,9 @@ function as_schedule_recurring_action( int $timestamp, int $interval, string $ho
 	return 123;
 }
 function as_enqueue_async_action( string $hook, array $args = array(), string $group = '', bool $unique = false, int $priority = 10 ): int {
+	if ( ! empty( $GLOBALS['ea_enqueue_failure'] ) ) {
+		return 0;
+	}
 	$queue = is_array( $GLOBALS['ea_action_queue'] ) ? $GLOBALS['ea_action_queue'] : array();
 	if ( $unique ) {
 		foreach ( $queue as $action ) {
@@ -111,7 +120,7 @@ function as_enqueue_async_action( string $hook, array $args = array(), string $g
 			}
 		}
 	}
-	$id = ( count( $queue ) + 1 ) * 17;
+	$id                           = ( count( $queue ) + 1 ) * 17;
 	$GLOBALS['ea_action_queue'][] = array(
 		'id'       => $id,
 		'status'   => 'pending',
@@ -120,6 +129,9 @@ function as_enqueue_async_action( string $hook, array $args = array(), string $g
 		'group'    => $group,
 		'priority' => $priority,
 	);
+	if ( isset( $GLOBALS['ea_after_enqueue'] ) && is_callable( $GLOBALS['ea_after_enqueue'] ) ) {
+		( $GLOBALS['ea_after_enqueue'] )( $GLOBALS['ea_action_queue'][ array_key_last( $GLOBALS['ea_action_queue'] ) ] );
+	}
 	return $id;
 }
 function as_unschedule_all_actions( string $hook, array $args = array(), string $group = '' ): void {
@@ -129,7 +141,7 @@ function as_unschedule_all_actions( string $hook, array $args = array(), string 
 		'args'  => $args,
 		'group' => $group,
 	);
-	$queue = is_array( $GLOBALS['ea_action_queue'] ) ? $GLOBALS['ea_action_queue'] : array();
+	$queue                          = is_array( $GLOBALS['ea_action_queue'] ) ? $GLOBALS['ea_action_queue'] : array();
 	if ( array() === $args && '' !== $hook && '' === $group ) {
 		$GLOBALS['ea_action_queue'] = array_values(
 			array_filter(
@@ -152,6 +164,9 @@ function as_unschedule_all_actions( string $hook, array $args = array(), string 
 	}
 }
 function as_unschedule_action( string $hook, array $args = array(), string $group = '' ): int {
+	if ( ! empty( $GLOBALS['ea_unschedule_failure'] ) ) {
+		return 0;
+	}
 	$queue = is_array( $GLOBALS['ea_action_queue'] ) ? $GLOBALS['ea_action_queue'] : array();
 	foreach ( $queue as $index => $action ) {
 		if ( $action['hook'] === $hook && $action['args'] === $args && ( '' === $group || $action['group'] === $group ) ) {
@@ -165,12 +180,13 @@ function as_unschedule_action( string $hook, array $args = array(), string $grou
 function as_get_scheduled_actions( array $args = array(), string $return_format = 'OBJECT' ): array {
 	$hook     = (string) ( $args['hook'] ?? '' );
 	$group    = (string) ( $args['group'] ?? '' );
+	$expected = isset( $args['args'] ) && is_array( $args['args'] ) ? $args['args'] : null;
 	$statuses = $args['status'] ?? array();
 	$statuses = is_array( $statuses ) ? $statuses : array( $statuses );
 	$found    = array();
 	foreach ( is_array( $GLOBALS['ea_action_queue'] ) ? $GLOBALS['ea_action_queue'] : array() as $action ) {
 		$status = (string) ( $action['status'] ?? 'pending' );
-		if ( ( '' === $hook || $action['hook'] === $hook ) && ( '' === $group || $action['group'] === $group ) && ( array() === $statuses || in_array( $status, $statuses, true ) ) ) {
+		if ( ( '' === $hook || $action['hook'] === $hook ) && ( null === $expected || $action['args'] === $expected ) && ( '' === $group || $action['group'] === $group ) && ( array() === $statuses || in_array( $status, $statuses, true ) ) ) {
 			$found[] = new class($action) {
 				/** @param array<string,mixed> $action */
 				public function __construct( private array $action ) {}
@@ -193,7 +209,7 @@ function as_get_scheduled_actions( array $args = array(), string $return_format 
 			};
 		}
 	}
-	return $found;
+	return array_slice( $found, 0, max( 1, (int) ( $args['per_page'] ?? count( $found ) ?: 1 ) ) );
 }
 
 function wp_cache_delete( string $key, string $group = '' ): bool {
@@ -221,7 +237,7 @@ function wc_update_product_stock( mixed ...$args ): int {
 function wc_get_products( array $args ): object {
 	$GLOBALS['ea_wc_reads'][] = array( 'wc_get_products', $args );
 	return (object) array(
-		'products'     => is_array( $GLOBALS['ea_wc_products'] ) ? $GLOBALS['ea_wc_products'] : array(),
+		'products'      => is_array( $GLOBALS['ea_wc_products'] ) ? $GLOBALS['ea_wc_products'] : array(),
 		'max_num_pages' => (int) ( $GLOBALS['ea_wc_max_pages'] ?? 1 ),
 	);
 }

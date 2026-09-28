@@ -13,7 +13,18 @@ final class StoreCatalogScanner {
 	public function __construct( private readonly SettingsRepository $settings, private readonly DryRunRepository $runs ) {}
 
 	/** @return array{products:int,variations:int,has_more:bool} */
-	public function scan_batch( int $run_id, int $page ): array {
+	public function scan_batch( int $run_id, int $page, string $claim_token = '' ): array {
+		$result  = $this->collect_batch( $page );
+		$records = $result['records'];
+		unset( $result['records'] );
+		if ( ! $this->runs->persist_store_page( $run_id, $claim_token, $records, array() ) ) {
+			throw new \RuntimeException( 'Catalog dry-run processing failed.' );
+		}
+		return $result;
+	}
+
+	/** @return array{products:int,variations:int,has_more:bool,records:list<array<string,mixed>>} */
+	public function collect_batch( int $page ): array {
 		// WooCommerce supplies these catalog functions after the dependency gate.
 		// @phpstan-ignore-next-line
 		$result   = \wc_get_products(
@@ -53,11 +64,7 @@ final class StoreCatalogScanner {
 				}
 			}
 		}
-		foreach ( $records as $record ) {
-			if ( ! $this->runs->store_identifier( $run_id, $record ) ) {
-				break;
-			}
-		}
+		$counts['records'] = $records;
 		return $counts;
 	}
 

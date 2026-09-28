@@ -34,7 +34,7 @@ final class StoreCatalogScannerTest extends TestCase {
 	public function test_scanner_records_identifiers_without_woocommerce_writes(): void {
 		$run_id  = $this->active_run();
 		$scanner = new StoreCatalogScanner( new SettingsRepository(), new DryRunRepository() );
-		$result  = $scanner->scan_batch( $run_id, 1 );
+		$result  = $scanner->scan_batch( $run_id, 1, ( new DryRunRepository() )->claim_token( $run_id ) );
 		self::assertSame( 1, $result['products'] );
 		self::assertSame( 1, $result['variations'] );
 		self::assertFalse( $result['has_more'] );
@@ -61,7 +61,7 @@ final class StoreCatalogScannerTest extends TestCase {
 		$GLOBALS['ea_wc_products']    = array( $parent );
 		$GLOBALS['ea_wc_product_map'] = array( 11 => $variation );
 		$run_id                       = $this->active_run();
-		( new StoreCatalogScanner( new SettingsRepository(), new DryRunRepository() ) )->scan_batch( $run_id, 1 );
+		( new StoreCatalogScanner( new SettingsRepository(), new DryRunRepository() ) )->scan_batch( $run_id, 1, ( new DryRunRepository() )->claim_token( $run_id ) );
 		$matches = ( new DryRunRepository() )->identifier_matches( $run_id, '001234567891', 'upc' );
 		self::assertCount( 1, $matches );
 	}
@@ -69,7 +69,7 @@ final class StoreCatalogScannerTest extends TestCase {
 	private function active_run(): int {
 		$runs   = new DryRunRepository();
 		$run_id = $runs->claim_new( 1 );
-		$runs->transition( $run_id, array( 'pending' ), array( 'status' => 'scanning_store' ) );
+		$runs->transition( $run_id, array( 'pending' ), array( 'status' => 'scanning_store' ), $runs->claim_token( $run_id ) );
 		return $run_id;
 	}
 }

@@ -7,13 +7,22 @@ use IdeaXperts\EndlessAisles\Catalog\MatchClassifier;
 defined( 'ABSPATH' ) || exit;
 
 final class DryRunRepository {
-	public const ACTIVE_STATUSES          = array( 'pending', 'scanning_store', 'fetching_catalog' );
+	public const ACTIVE_STATUSES          = array( 'pending', 'scanning_store', 'fetching_catalog', 'cancelling', 'recovering' );
 	public const LOCK_OPTION              = 'ideaxperts_ea_active_dry_run_id';
 	public const COMPLETED_RETENTION_DAYS = 90;
 	public const CANCELLED_RETENTION_DAYS = 90;
 	public const FAILED_RETENTION_DAYS    = 180;
 	public const STALE_AFTER_SECONDS      = 21600;
 	public const PURGE_BATCH_SIZE         = 25;
+	public const DEACTIVATING_OPTION      = 'ideaxperts_ea_deactivating';
+	public const ACTION_BATCH_SIZE        = 25;
+	public const MAX_DISPATCH_ATTEMPTS    = 5;
+	public const DISPATCH_LEASE_SECONDS   = 300;
+	// One page is bounded to 50 store products or one QA API page. Thirty minutes
+	// accommodates slow WooCommerce hooks while still allowing deterministic recovery.
+	public const EXECUTION_LEASE_SECONDS = 1800;
+
+	private bool $session_usable = true;
 
 	private const RUN_FIELDS = array(
 		'status',
@@ -29,21 +38,27 @@ final class DryRunRepository {
 		'resume_cursor',
 		'cancellation_at',
 		'last_heartbeat_at',
+		'claim_token',
+		'claim_generation',
 	);
 
 	public function claim_new( int $user_id, string $environment = 'qa' ): int {
-		$this->recover_stale_active();
+		$this->release_stale_unbound_lock();
 		$token   = $this->new_lock_token();
-		$pending = $this->lock_payload( $token, 0 );
+		$pending = $this->lock_payload( $token, 0, 1 );
 		if ( ! $this->insert_lock( $pending ) ) {
 			return 0;
 		}
-		$run_id = $this->create( $user_id, $environment );
+		if ( get_option( self::DEACTIVATING_OPTION, false ) ) {
+			$this->cas_delete_lock( $pending );
+			return 0;
+		}
+		$run_id = $this->create( $user_id, $environment, $token );
 		if ( $run_id < 1 ) {
 			$this->cas_delete_lock( $pending );
 			return 0;
 		}
-		$owned = $this->lock_payload( $token, $run_id );
+		$owned = $this->lock_payload( $token, $run_id, 1 );
 		if ( ! $this->cas_update_lock( $pending, $owned ) ) {
 			$this->transition(
 				$run_id,
@@ -51,33 +66,115 @@ final class DryRunRepository {
 				array(
 					'status'        => 'failed',
 					'error_summary' => 'The dry run lost the active-run lock before it started.',
-				)
+				),
+				$token
 			);
 			return 0;
 		}
 		return $run_id;
 	}
 
-	public function claim_existing( int $run_id ): bool {
-		$this->recover_stale_active();
-		if ( $this->active_id() > 0 ) {
+	public function begin_deactivation(): bool {
+		$marker = add_option( self::DEACTIVATING_OPTION, current_time( 'mysql', true ), '', false );
+		if ( ! $marker && false === get_option( self::DEACTIVATING_OPTION, false ) ) {
 			return false;
 		}
-		$token   = $this->new_lock_token();
-		$payload = $this->lock_payload( $token, $run_id );
-		return $this->insert_lock( $payload );
-	}
-
-	public function release_lock( int $run_id ): void {
 		$current = $this->lock_value();
 		$parsed  = $this->parse_lock( $current );
-		if ( ! $parsed || (int) $parsed['run_id'] !== $run_id ) {
+		if ( $parsed && 0 === $parsed['run_id'] ) {
+			return $this->cas_delete_lock( $current );
+		}
+		return true;
+	}
+
+	public function reconcile_activation_placeholder(): bool {
+		$current = $this->lock_value();
+		$parsed  = $this->parse_lock( $current );
+		if ( $parsed && 0 === $parsed['run_id'] && ! $this->cas_delete_lock( $current ) ) {
+			return false;
+		}
+		return delete_option( self::DEACTIVATING_OPTION ) || false === get_option( self::DEACTIVATING_OPTION, false );
+	}
+
+	public function claim_token( int $run_id ): string {
+		$run = $this->run( $run_id );
+		return is_array( $run ) ? (string) ( $run['claim_token'] ?? '' ) : '';
+	}
+
+	public function claim_generation( int $run_id ): int {
+		$run = $this->run( $run_id );
+		return is_array( $run ) ? max( 1, (int) ( $run['claim_generation'] ?? 1 ) ) : 0;
+	}
+
+	public function lock_run_id(): int {
+		$parsed = $this->parse_lock( $this->lock_value() );
+		return $parsed ? $parsed['run_id'] : 0;
+	}
+
+	public function claim_existing( int $run_id ): bool {
+		return '' !== $this->claim_existing_token( $run_id );
+	}
+
+	public function claim_existing_token( int $run_id ): string {
+		$this->release_stale_unbound_lock();
+		if ( get_option( self::DEACTIVATING_OPTION, false ) || $this->active_id() > 0 ) {
+			return '';
+		}
+		$token               = $this->new_lock_token();
+		$previous            = $this->run( $run_id );
+		$previous_token      = is_array( $previous ) ? (string) ( $previous['claim_token'] ?? '' ) : '';
+		$previous_generation = is_array( $previous ) ? max( 1, (int) ( $previous['claim_generation'] ?? 1 ) ) : 0;
+		$generation          = $previous_generation + 1;
+		if ( 0 === $generation ) {
+			return '';
+		}
+		$payload = $this->lock_payload( $token, $run_id, $generation );
+		if ( ! $this->insert_lock( $payload ) ) {
+			return '';
+		}
+		// @phpstan-ignore-next-line -- Deactivation can begin concurrently after the first check.
+		if ( get_option( self::DEACTIVATING_OPTION, false ) ) {
+			$this->cas_delete_lock( $payload );
+			return '';
+		}
+		$claimed = $this->with_locked_run(
+			$run_id,
+			$previous_token,
+			array( 'failed' ),
+			function ( array $run ) use ( $run_id, $token, $generation ): bool {
+				return $this->update_run_row(
+					$run_id,
+					array(
+						'claim_token'      => $token,
+						'claim_generation' => $generation,
+					)
+				);
+			},
+			$previous_generation
+		);
+		if ( ! $claimed ) {
+			$this->cas_delete_lock( $payload );
+			return '';
+		}
+		return $token;
+	}
+
+	public function release_lock( int $run_id, string $token = '', int $generation = 0 ): void {
+		if ( ! $this->session_usable ) {
+			return;
+		}
+		$current = $this->lock_value();
+		$parsed  = $this->parse_lock( $current );
+		if ( ! $parsed || (int) $parsed['run_id'] !== $run_id || '' === $token || ! hash_equals( $parsed['token'], $token ) || ( $generation > 0 && $parsed['generation'] !== $generation ) ) {
 			return;
 		}
 		$this->cas_delete_lock( $current );
 	}
 
-	public function create( int $user_id, string $environment = 'qa' ): int {
+	public function create( int $user_id, string $environment = 'qa', string $claim_token = '' ): int {
+		if ( ! $this->session_usable ) {
+			return 0;
+		}
 		global $wpdb;
 		$now = current_time( 'mysql', true );
 		$ok  = $wpdb->insert(
@@ -95,8 +192,10 @@ final class DryRunRepository {
 				'variations_inspected'    => 0,
 				'store_records_inspected' => 0,
 				'resume_cursor'           => '',
+				'claim_token'             => $claim_token,
+				'claim_generation'        => 1,
 			),
-			array( '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s' )
+			array( '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%d' )
 		);
 		return false === $ok ? 0 : (int) $wpdb->insert_id;
 	}
@@ -104,14 +203,16 @@ final class DryRunRepository {
 	public function active_id(): int {
 		global $wpdb;
 		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-		return (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE status IN (%s,%s,%s) ORDER BY id DESC LIMIT 1", self::ACTIVE_STATUSES[0], self::ACTIVE_STATUSES[1], self::ACTIVE_STATUSES[2] ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$slots = implode( ',', array_fill( 0, count( self::ACTIVE_STATUSES ), '%s' ) );
+		return (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE status IN ({$slots}) ORDER BY id DESC LIMIT 1", ...self::ACTIVE_STATUSES ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
 	}
 
 	/** @return list<int> */
 	public function active_ids(): array {
 		global $wpdb;
 		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT id FROM {$table} WHERE status IN (%s,%s,%s)", self::ACTIVE_STATUSES[0], self::ACTIVE_STATUSES[1], self::ACTIVE_STATUSES[2] ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$slots = implode( ',', array_fill( 0, count( self::ACTIVE_STATUSES ), '%s' ) );
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT id FROM {$table} WHERE status IN ({$slots})", ...self::ACTIVE_STATUSES ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
 		$ids   = array();
 		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
 			$ids[] = (int) $row['id'];
@@ -123,15 +224,9 @@ final class DryRunRepository {
 	public function fail_active_runs( string $message ): array {
 		$failed = array();
 		foreach ( $this->active_ids() as $run_id ) {
-			if ( $this->transition(
-				$run_id,
-				self::ACTIVE_STATUSES,
-				array(
-					'status'        => 'failed',
-					'error_summary' => $message,
-					'completed_at'  => current_time( 'mysql', true ),
-				)
-			) ) {
+			$token      = $this->claim_token( $run_id );
+			$generation = $this->claim_generation( $run_id );
+			if ( null !== $this->begin_failure( $run_id, $token, $generation, $message ) ) {
 				$failed[] = $run_id;
 			}
 		}
@@ -142,7 +237,10 @@ final class DryRunRepository {
 	 * @param list<string>        $from_statuses Empty list updates by id only.
 	 * @param array<string,mixed> $fields
 	 */
-	public function transition( int $run_id, array $from_statuses, array $fields ): bool {
+	public function transition( int $run_id, array $from_statuses, array $fields, string $claim_token = '', int $claim_generation = 0 ): bool {
+		if ( ! $this->session_usable ) {
+			return false;
+		}
 		global $wpdb;
 		$data               = array_intersect_key( $fields, array_flip( self::RUN_FIELDS ) );
 		$data['updated_at'] = current_time( 'mysql', true );
@@ -153,8 +251,13 @@ final class DryRunRepository {
 			$args[] = null === $value ? null : (string) $value;
 		}
 		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-		$sql    = "UPDATE {$table} SET " . implode( ', ', $set ) . ' WHERE id = %d';
+		$sql    = "UPDATE {$table} SET " . implode( ', ', $set ) . ' WHERE id = %d AND claim_token = %s';
 		$args[] = $run_id;
+		$args[] = $claim_token;
+		if ( $claim_generation > 0 ) {
+			$sql   .= ' AND claim_generation = %d';
+			$args[] = $claim_generation;
+		}
 		if ( $from_statuses ) {
 			$placeholders = implode( ',', array_fill( 0, count( $from_statuses ), '%s' ) );
 			$sql         .= " AND status IN ({$placeholders})";
@@ -166,8 +269,106 @@ final class DryRunRepository {
 		return false !== $result && (int) $wpdb->rows_affected > 0;
 	}
 
-	public function heartbeat( int $run_id ): bool {
-		return $this->transition( $run_id, self::ACTIVE_STATUSES, array( 'last_heartbeat_at' => current_time( 'mysql', true ) ) );
+	public function heartbeat( int $run_id, string $claim_token = '', int $claim_generation = 0 ): bool {
+		return $this->transition( $run_id, array( 'pending', 'scanning_store', 'fetching_catalog' ), array( 'last_heartbeat_at' => current_time( 'mysql', true ) ), $claim_token, $claim_generation );
+	}
+
+	/**
+	 * @param list<string>        $statuses
+	 * @param array<string,mixed> $fields
+	 */
+	public function update_and_then( int $run_id, string $claim_token, array $statuses, array $fields, ?Closure $after_write = null, int $claim_generation = 0 ): bool {
+		return $this->with_locked_run(
+			$run_id,
+			$claim_token,
+			$statuses,
+			function () use ( $run_id, $fields, $after_write ): bool {
+				if ( ! $this->update_run_row( $run_id, $fields ) ) {
+					return false;
+				}
+				return null === $after_write || true === $after_write();
+			},
+			$claim_generation
+		);
+	}
+
+	/** @return array{run_id:int,claim_token:string,claim_generation:int}|null */
+	public function request_cancellation( int $run_id, int $claim_generation ): ?array {
+		$run = $this->run( $run_id );
+		if ( ! $run || $claim_generation < 1 ) {
+			return null;
+		}
+		$token = (string) ( $run['claim_token'] ?? '' );
+		$ok    = $this->with_locked_run(
+			$run_id,
+			$token,
+			array( 'pending', 'scanning_store', 'fetching_catalog' ),
+			function () use ( $run_id, $token, $claim_generation ): bool {
+				return $this->update_run_row(
+					$run_id,
+					array(
+						'status'          => 'cancelling',
+						'cancellation_at' => current_time( 'mysql', true ),
+					)
+				) && $this->mark_claim_intents_cancel_requested( $run_id, $token, $claim_generation );
+			},
+			$claim_generation
+		);
+		return $ok ? array(
+			'run_id'           => $run_id,
+			'claim_token'      => $token,
+			'claim_generation' => $claim_generation,
+		) : null;
+	}
+
+	/** @return array{run_id:int,claim_token:string,claim_generation:int}|null */
+	public function begin_failure( int $run_id, string $claim_token, int $claim_generation, string $message, string $cursor = '' ): ?array {
+		$fields = array(
+			'status'        => 'recovering',
+			'error_summary' => $message,
+		);
+		if ( '' !== $cursor ) {
+			$fields['resume_cursor'] = $cursor;
+		}
+		$ok = $this->with_locked_run(
+			$run_id,
+			$claim_token,
+			array( 'pending', 'scanning_store', 'fetching_catalog' ),
+			function () use ( $run_id, $claim_token, $claim_generation, $fields ): bool {
+				return $this->update_run_row( $run_id, $fields ) && $this->mark_claim_intents_cancel_requested( $run_id, $claim_token, $claim_generation );
+			},
+			$claim_generation
+		);
+		return $ok ? array(
+			'run_id'           => $run_id,
+			'claim_token'      => $claim_token,
+			'claim_generation' => $claim_generation,
+		) : null;
+	}
+
+	public function finalize_cleanup( int $run_id, string $claim_token, int $claim_generation, string $status ): bool {
+		if ( ! in_array( $status, array( 'cancelled', 'failed' ), true ) ) {
+			return false;
+		}
+		$from = 'cancelled' === $status ? array( 'cancelling' ) : array( 'recovering' );
+		return $this->with_locked_run(
+			$run_id,
+			$claim_token,
+			$from,
+			function () use ( $run_id, $claim_token, $claim_generation, $status ): bool {
+				if ( $this->has_open_claim_intents( $run_id, $claim_token, $claim_generation ) ) {
+					return false;
+				}
+				return $this->update_run_row(
+					$run_id,
+					array(
+						'status'       => $status,
+						'completed_at' => current_time( 'mysql', true ),
+					)
+				);
+			},
+			$claim_generation
+		);
 	}
 
 	public function recover_stale_active(): int {
@@ -188,19 +389,9 @@ final class DryRunRepository {
 		if ( $age < self::STALE_AFTER_SECONDS ) {
 			return 0;
 		}
-		$failed = $this->transition(
-			$run_id,
-			self::ACTIVE_STATUSES,
-			array(
-				'status'        => 'failed',
-				'error_summary' => 'The dry run stopped sending heartbeats and was marked stale.',
-			)
-		);
-		if ( ! $failed ) {
-			return 0;
-		}
-		$this->release_lock( $run_id );
-		return $run_id;
+		$token      = (string) ( $run['claim_token'] ?? '' );
+		$generation = max( 1, (int) ( $run['claim_generation'] ?? 1 ) );
+		return null !== $this->begin_failure( $run_id, $token, $generation, 'The dry run stopped sending heartbeats and was marked stale.' ) ? $run_id : 0;
 	}
 
 	/** @return array<string,mixed>|null */
@@ -211,7 +402,7 @@ final class DryRunRepository {
 	}
 
 	/** @param array<string,mixed> $record */
-	public function store_identifier( int $run_id, array $record ): bool {
+	public function store_identifier( int $run_id, array $record, string $claim_token = '' ): bool {
 		$data = array_merge(
 			array(
 				'run_id'                => $run_id,
@@ -233,10 +424,73 @@ final class DryRunRepository {
 		);
 		return $this->with_active_run(
 			$run_id,
-			function () use ( $data ): void {
+			$claim_token,
+			function () use ( $data ): bool {
 				global $wpdb;
-				$wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_store_identifiers', $data );
+				return false !== $wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_store_identifiers', $data );
 			}
+		);
+	}
+
+	/**
+	 * @param list<array<string,mixed>> $records
+	 * @param array<string,mixed>       $run_fields
+	 */
+	public function persist_store_page( int $run_id, string $claim_token, array $records, array $run_fields, ?Closure $after_write = null, int $claim_generation = 0 ): bool {
+		return $this->with_active_run(
+			$run_id,
+			$claim_token,
+			function () use ( $run_id, $records, $run_fields, $after_write ): bool {
+				global $wpdb;
+				foreach ( $records as $record ) {
+					if ( false === $wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_store_identifiers', $this->store_identifier_data( $run_id, $record ) ) ) {
+						return false;
+					}
+				}
+				$counts = $this->store_record_counts_checked( $run_id );
+				if ( null === $counts ) {
+					return false;
+				}
+				$fields = array_merge(
+					$run_fields,
+					array(
+						'products_inspected'      => $counts['products'],
+						'variations_inspected'    => $counts['variations'],
+						'store_records_inspected' => $counts['products'] + $counts['variations'],
+					)
+				);
+				if ( ! $this->update_run_row( $run_id, $fields ) ) {
+					return false;
+				}
+				return null === $after_write || true === $after_write();
+			},
+			$claim_generation
+		);
+	}
+
+	/**
+	 * @param array<string,mixed> $record
+	 * @return array<string,mixed>
+	 */
+	private function store_identifier_data( int $run_id, array $record ): array {
+		return array_merge(
+			array(
+				'run_id'                => $run_id,
+				'wc_product_id'         => 0,
+				'wc_variation_id'       => 0,
+				'product_type'          => '',
+				'product_status'        => '',
+				'title'                 => '',
+				'identifier_type'       => '',
+				'identifier_source'     => '',
+				'original_identifier'   => '',
+				'normalized_identifier' => '',
+				'parent_product_id'     => 0,
+				'ea_product_id'         => '',
+				'ea_option_id'          => '',
+				'created_at'            => current_time( 'mysql', true ),
+			),
+			$record
 		);
 	}
 
@@ -246,10 +500,14 @@ final class DryRunRepository {
 			return array();
 		}
 		global $wpdb;
-		$table  = $wpdb->prefix . 'ideaxperts_ea_store_identifiers';
-		$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE run_id = %d AND normalized_identifier = %s AND identifier_type = %s", $run_id, $normalized, $type ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$this->clear_database_error();
+		$table = $wpdb->prefix . 'ideaxperts_ea_store_identifiers';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE run_id = %d AND normalized_identifier = %s AND identifier_type = %s", $run_id, $normalized, $type ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $rows ) || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			throw new \RuntimeException( 'Catalog dry-run database read failed.' );
+		}
 		$unique = array();
-		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		foreach ( $rows as $row ) {
 			$key = (int) ( $row['wc_product_id'] ?? 0 ) . ':' . (int) ( $row['wc_variation_id'] ?? 0 );
 			if ( ! isset( $unique[ $key ] ) ) {
 				$unique[ $key ] = $row;
@@ -260,12 +518,24 @@ final class DryRunRepository {
 
 	/** @return array{products:int,variations:int} */
 	public function store_record_counts( int $run_id ): array {
+		return $this->store_record_counts_checked( $run_id ) ?? array(
+			'products'   => 0,
+			'variations' => 0,
+		);
+	}
+
+	/** @return array{products:int,variations:int}|null */
+	private function store_record_counts_checked( int $run_id ): ?array {
 		global $wpdb;
-		$table      = $wpdb->prefix . 'ideaxperts_ea_store_identifiers';
-		$rows       = $wpdb->get_results( $wpdb->prepare( "SELECT wc_product_id, wc_variation_id FROM {$table} WHERE run_id = %d", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$this->clear_database_error();
+		$table = $wpdb->prefix . 'ideaxperts_ea_store_identifiers';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT wc_product_id, wc_variation_id FROM {$table} WHERE run_id = %d", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $rows ) || ( isset( $wpdb->last_error ) && '' !== $wpdb->last_error ) ) {
+			return null;
+		}
 		$products   = array();
 		$variations = array();
-		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		foreach ( $rows as $row ) {
 			if ( (int) $row['wc_variation_id'] > 0 ) {
 				$variations[ (int) $row['wc_variation_id'] ] = true;
 			} else {
@@ -281,21 +551,29 @@ final class DryRunRepository {
 	/** @return list<array<string,mixed>> */
 	public function mappings( string $product_id, string $option_id ): array {
 		global $wpdb;
+		$this->clear_database_error();
 		$table = $wpdb->prefix . 'ideaxperts_ea_mappings';
 		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE mapping_status = %s AND ea_product_id = %s AND ea_option_id = %s", 'active', $product_id, $option_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		return is_array( $rows ) ? $rows : array();
+		if ( ! is_array( $rows ) || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			throw new \RuntimeException( 'Catalog dry-run database read failed.' );
+		}
+		return $rows;
 	}
 
 	/** @return array<string,mixed>|null */
 	public function mapping_for_store_item( int $wc_product_id, int $wc_variation_id ): ?array {
 		global $wpdb;
+		$this->clear_database_error();
 		$table = $wpdb->prefix . 'ideaxperts_ea_mappings';
 		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE mapping_status = %s AND wc_product_id = %d AND wc_variation_id = %d", 'active', $wc_product_id, $wc_variation_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			throw new \RuntimeException( 'Catalog dry-run database read failed.' );
+		}
 		return is_array( $row ) ? $row : null;
 	}
 
 	/** @param array<string,mixed> $item */
-	public function item( int $run_id, array $item ): bool {
+	public function item( int $run_id, array $item, string $claim_token = '' ): bool {
 		$data = array_merge(
 			array(
 				'run_id'                    => $run_id,
@@ -324,63 +602,227 @@ final class DryRunRepository {
 		$data['review_flags'] = wp_json_encode( MatchClassifier::sanitize_flags( is_array( $data['review_flags'] ) ? $data['review_flags'] : json_decode( (string) $data['review_flags'], true ) ) );
 		return $this->with_active_run(
 			$run_id,
-			function () use ( $data ): void {
+			$claim_token,
+			function () use ( $data ): bool {
 				global $wpdb;
-				$wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_dry_run_items', $data );
+				return false !== $wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_dry_run_items', $data );
 			}
 		);
 	}
 
-	public function vendor_upc_used_by_other_option( int $run_id, string $normalized_upc, string $product_id, string $option_id ): bool {
+	/**
+	 * @param list<array<string,mixed>> $items
+	 * @param list<string>              $duplicate_upcs
+	 * @param array<string,mixed>       $run_fields
+	 */
+	public function persist_catalog_page( int $run_id, string $claim_token, array $items, array $duplicate_upcs, array $run_fields, ?Closure $after_write = null, int $claim_generation = 0 ): bool {
+		return $this->with_active_run(
+			$run_id,
+			$claim_token,
+			function () use ( $run_id, $items, $duplicate_upcs, $run_fields, $after_write ): bool {
+				global $wpdb;
+				foreach ( $items as $item ) {
+					$data = $this->item_data( $run_id, $item );
+					if ( false === $wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_dry_run_items', $data ) ) {
+						return false;
+					}
+				}
+				foreach ( array_values( array_unique( $duplicate_upcs ) ) as $upc ) {
+					if ( ! $this->add_review_flag_locked( $run_id, $upc, 'duplicate_vendor_upc' ) ) {
+						return false;
+					}
+				}
+				$match_counts = $this->classification_counts_checked( $run_id );
+				if ( null === $match_counts ) {
+					return false;
+				}
+				$flag_counts = $this->flag_counts_checked( $run_id );
+				if ( null === $flag_counts ) {
+					return false;
+				}
+				$fields = array_merge(
+					$run_fields,
+					array(
+						'match_counters'   => wp_json_encode( $match_counts ),
+						'warning_counters' => wp_json_encode( $flag_counts ),
+					)
+				);
+				if ( ! $this->update_run_row( $run_id, $fields ) ) {
+					return false;
+				}
+				return null === $after_write || true === $after_write();
+			},
+			$claim_generation
+		);
+	}
+
+	/**
+	 * @param list<array<string,mixed>>                         $records
+	 * @param array<string,mixed>                               $run_fields
+	 * @param array{action_type:string,hook:string,page:int}|null $next
+	 */
+	public function persist_store_page_execution( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $hook, int $page, array $records, array $run_fields, ?array $next ): bool {
+		return $this->with_running_intent(
+			$run_id,
+			$claim_token,
+			$claim_generation,
+			$intent_id,
+			$intent_token,
+			$execution_token,
+			'store',
+			$hook,
+			$page,
+			'scanning_store',
+			'current_store_page',
+			function () use ( $run_id, $records, $run_fields ): bool {
+				global $wpdb;
+				foreach ( $records as $record ) {
+					if ( false === $wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_store_identifiers', $this->store_identifier_data( $run_id, $record ) ) ) {
+						return false;
+					}
+				}
+				$counts = $this->store_record_counts_checked( $run_id );
+				return null !== $counts && $this->update_run_row(
+					$run_id,
+					array_merge(
+						$run_fields,
+						array(
+							'products_inspected'      => $counts['products'],
+							'variations_inspected'    => $counts['variations'],
+							'store_records_inspected' => $counts['products'] + $counts['variations'],
+						)
+					)
+				);
+			},
+			$next
+		);
+	}
+
+	/**
+	 * @param list<array<string,mixed>>                         $items
+	 * @param list<string>                                      $duplicate_upcs
+	 * @param array<string,mixed>                               $run_fields
+	 * @param array{action_type:string,hook:string,page:int}|null $next
+	 */
+	public function persist_catalog_page_execution( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $hook, int $page, array $items, array $duplicate_upcs, array $run_fields, ?array $next ): bool {
+		return $this->with_running_intent(
+			$run_id,
+			$claim_token,
+			$claim_generation,
+			$intent_id,
+			$intent_token,
+			$execution_token,
+			'catalog',
+			$hook,
+			$page,
+			'fetching_catalog',
+			'current_api_page',
+			function () use ( $run_id, $items, $duplicate_upcs, $run_fields ): bool {
+				global $wpdb;
+				foreach ( $items as $item ) {
+					if ( false === $wpdb->replace( $wpdb->prefix . 'ideaxperts_ea_dry_run_items', $this->item_data( $run_id, $item ) ) ) {
+						return false;
+					}
+				}
+				foreach ( array_values( array_unique( $duplicate_upcs ) ) as $upc ) {
+					if ( ! $this->add_review_flag_locked( $run_id, $upc, 'duplicate_vendor_upc' ) ) {
+						return false;
+					}
+				}
+				$matches = $this->classification_counts_checked( $run_id );
+				$flags   = $this->flag_counts_checked( $run_id );
+				return null !== $matches && null !== $flags && $this->update_run_row(
+					$run_id,
+					array_merge(
+						$run_fields,
+						array(
+							'match_counters'   => wp_json_encode( $matches ),
+							'warning_counters' => wp_json_encode( $flags ),
+						)
+					)
+				);
+			},
+			$next
+		);
+	}
+
+	/**
+	 * @param array<string,mixed> $item
+	 * @return array<string,mixed>
+	 */
+	private function item_data( int $run_id, array $item ): array {
+		$data                 = array_merge(
+			array(
+				'run_id'                    => $run_id,
+				'ea_product_id'             => '',
+				'ea_option_id'              => '',
+				'original_upc'              => '',
+				'normalized_upc'            => '',
+				'wc_product_id'             => 0,
+				'wc_variation_id'           => 0,
+				'classification'            => 'manual_review',
+				'review_flags'              => '[]',
+				'review_reason'             => '',
+				'vendor_title'              => '',
+				'vendor_option_description' => '',
+				'retail_price'              => '',
+				'wholesale_price'           => '',
+				'map_price'                 => '',
+				'purchasable'               => 0,
+				'discontinued'              => 0,
+				'created_at'                => current_time( 'mysql', true ),
+				'updated_at'                => current_time( 'mysql', true ),
+			),
+			$item
+		);
+		$data['review_flags'] = wp_json_encode( MatchClassifier::sanitize_flags( is_array( $data['review_flags'] ) ? $data['review_flags'] : json_decode( (string) $data['review_flags'], true ) ) );
+		return $data;
+	}
+
+	public function vendor_upc_used_by_other_option( int $run_id, string $normalized_upc, string $product_id, string $option_id ): ?bool {
 		if ( '' === $normalized_upc ) {
 			return false;
 		}
 		global $wpdb;
+		$this->clear_database_error();
 		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
-		$count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE run_id = %d AND normalized_upc = %s AND NOT (ea_product_id = %s AND ea_option_id = %s)", $run_id, $normalized_upc, $product_id, $option_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$value = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE run_id = %d AND normalized_upc = %s AND NOT (ea_product_id = %s AND ea_option_id = %s)", $run_id, $normalized_upc, $product_id, $option_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( '' !== (string) ( $wpdb->last_error ?? '' ) || null === $value ) {
+			return null;
+		}
+		$count = (int) $value;
 		return $count > 0;
 	}
 
-	public function add_review_flag_for_upc( int $run_id, string $normalized_upc, string $flag ): void {
+	public function add_review_flag_for_upc( int $run_id, string $normalized_upc, string $flag, string $claim_token = '' ): bool {
 		$allowed = MatchClassifier::sanitize_flags( array( $flag ) );
 		if ( '' === $normalized_upc || array() === $allowed ) {
-			return;
+			return false;
 		}
 		$flag = $allowed[0];
-		$this->with_active_run(
+		return $this->with_active_run(
 			$run_id,
-			function () use ( $run_id, $normalized_upc, $flag ): void {
-				global $wpdb;
-				$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
-				$runs  = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-				$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT i.id, i.review_flags FROM {$table} i INNER JOIN {$runs} r ON r.id = i.run_id WHERE i.run_id = %d AND i.normalized_upc = %s AND r.status IN (%s,%s,%s)", $run_id, $normalized_upc, self::ACTIVE_STATUSES[0], self::ACTIVE_STATUSES[1], self::ACTIVE_STATUSES[2] ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				foreach ( is_array( $rows ) ? $rows : array() as $row ) {
-					$flags = MatchClassifier::sanitize_flags( json_decode( (string) $row['review_flags'], true ) );
-					if ( in_array( $flag, $flags, true ) ) {
-						continue;
-					}
-					$flags[] = $flag;
-					$wpdb->query(
-						$wpdb->prepare(
-							"UPDATE {$table} i INNER JOIN {$runs} r ON r.id = i.run_id SET i.review_flags = %s, i.updated_at = %s WHERE i.id = %d AND r.status IN (%s,%s,%s)", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table names come from $wpdb->prefix schema constants.
-							wp_json_encode( MatchClassifier::sanitize_flags( $flags ) ),
-							current_time( 'mysql', true ),
-							(int) $row['id'],
-							self::ACTIVE_STATUSES[0],
-							self::ACTIVE_STATUSES[1],
-							self::ACTIVE_STATUSES[2]
-						)
-					);
-				}
+			$claim_token,
+			function () use ( $run_id, $normalized_upc, $flag ): bool {
+				return $this->add_review_flag_locked( $run_id, $normalized_upc, $flag );
 			}
 		);
 	}
 
-	/** @return array<string,int> */
-	public function classification_counts( int $run_id ): array {
+	/** @return array<string,int>|null */
+	public function classification_counts( int $run_id ): ?array {
+		return $this->classification_counts_checked( $run_id );
+	}
+
+	/** @return array<string,int>|null */
+	private function classification_counts_checked( int $run_id ): ?array {
 		global $wpdb;
-		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
-		$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT classification, COUNT(*) AS total FROM {$table} WHERE run_id = %d GROUP BY classification", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$this->clear_database_error();
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT classification, COUNT(*) AS total FROM {$table} WHERE run_id = %d GROUP BY classification", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $rows ) || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			return null;
+		}
 		$result = array();
 		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
 			$result[ (string) $row['classification'] ] = (int) $row['total'];
@@ -388,11 +830,20 @@ final class DryRunRepository {
 		return $result;
 	}
 
-	/** @return array<string,int> */
-	public function flag_counts( int $run_id ): array {
+	/** @return array<string,int>|null */
+	public function flag_counts( int $run_id ): ?array {
+		return $this->flag_counts_checked( $run_id );
+	}
+
+	/** @return array<string,int>|null */
+	private function flag_counts_checked( int $run_id ): ?array {
 		global $wpdb;
-		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
-		$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT review_flags FROM {$table} WHERE run_id = %d", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$this->clear_database_error();
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT review_flags FROM {$table} WHERE run_id = %d", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $rows ) || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			return null;
+		}
 		$result = array();
 		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
 			foreach ( MatchClassifier::sanitize_flags( json_decode( (string) $row['review_flags'], true ) ) as $flag ) {
@@ -412,6 +863,526 @@ final class DryRunRepository {
 			$result[ (string) $row['identifier_source'] ] = (int) $row['total'];
 		}
 		return $result;
+	}
+
+	public function create_action_intent( int $run_id, string $claim_token, int $claim_generation, string $action_type, string $hook, int $page_number ): int {
+		if ( ! $this->session_usable || $claim_generation < 1 || '' === $claim_token ) {
+			return 0;
+		}
+		return $this->insert_action_intent( $run_id, $claim_token, $claim_generation, $action_type, $hook, $page_number );
+	}
+
+	public function create_maintenance_intent( string $action_type, string $hook, int $claim_generation = 0 ): int {
+		if ( ! $this->session_usable ) {
+			return 0;
+		}
+		global $wpdb;
+		$table      = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$generation = $claim_generation;
+		if ( $generation < 1 ) {
+			$this->clear_database_error();
+			$generation = (int) $wpdb->get_var( "SELECT COALESCE(MAX(claim_generation),0) + 1 FROM {$table} WHERE run_id = 0 AND action_type = 'purge'" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table and constant predicate.
+			if ( '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+				return 0;
+			}
+		}
+		return $this->insert_action_intent( 0, '', max( 1, $generation ), $action_type, $hook, 0 );
+	}
+
+	private function insert_action_intent( int $run_id, string $claim_token, int $claim_generation, string $action_type, string $hook, int $page_number ): int {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$now   = current_time( 'mysql', true );
+		$token = $this->new_lock_token();
+		$ok    = $wpdb->insert(
+			$table,
+			array(
+				'run_id'                    => $run_id,
+				'claim_token'               => $claim_token,
+				'claim_generation'          => $claim_generation,
+				'intent_token'              => $token,
+				'action_type'               => $action_type,
+				'hook'                      => $hook,
+				'page_number'               => $page_number,
+				'status'                    => 'pending',
+				'action_scheduler_id'       => null,
+				'attempts'                  => 0,
+				'available_at'              => $now,
+				'last_attempt_at'           => null,
+				'dispatch_token'            => '',
+				'dispatch_started_at'       => null,
+				'dispatch_lease_expires_at' => null,
+				'execution_token'           => '',
+				'started_at'                => null,
+				'lease_expires_at'          => null,
+				'created_at'                => $now,
+				'updated_at'                => $now,
+			)
+		);
+		if ( false !== $ok ) {
+			return (int) $wpdb->insert_id;
+		}
+		$this->clear_database_error();
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table name.
+				"SELECT * FROM {$table} WHERE run_id = %d AND claim_generation = %d AND action_type = %s AND page_number = %d",
+				$run_id,
+				$claim_generation,
+				$action_type,
+				$page_number
+			),
+			ARRAY_A
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $row ) && hash_equals( (string) ( $row['claim_token'] ?? '' ), $claim_token ) ? (int) $row['id'] : 0;
+	}
+
+	/** @return array<string,mixed>|null */
+	public function action_intent( int $intent_id, string $intent_token = '' ): ?array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $intent_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $row ) || ( '' !== $intent_token && ! hash_equals( (string) ( $row['intent_token'] ?? '' ), $intent_token ) ) ) {
+			return null;
+		}
+		return $row;
+	}
+
+	/**
+	 * Atomically authenticates an action and leases it to one callback.
+	 *
+	 * @return string The new execution token, or an empty string when the claim is stale or invalid.
+	 */
+	public function claim_intent_execution( int $intent_id, string $intent_token, int $run_id, string $claim_token, int $claim_generation, string $action_type, string $hook, int $page_number, string $run_status = '', string $cursor_column = '' ): string {
+		global $wpdb;
+		if ( ! $this->session_usable || $intent_id < 1 || '' === $intent_token || $claim_generation < 1 || '' === $action_type || '' === $hook || false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return '';
+		}
+		$open      = true;
+		$execution = $this->new_lock_token();
+		$now       = current_time( 'mysql', true );
+		$expires   = gmdate( 'Y-m-d H:i:s', strtotime( $now ) + self::EXECUTION_LEASE_SECONDS );
+		try {
+			if ( $run_id > 0 ) {
+				$run_table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+				$run       = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$run_table} WHERE id = %d AND claim_token = %s AND claim_generation = %d FOR UPDATE", $run_id, $claim_token, $claim_generation ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				if ( ! is_array( $run ) || '' !== (string) ( $wpdb->last_error ?? '' ) || $run_status !== (string) ( $run['status'] ?? '' ) || ! in_array( $cursor_column, array( 'current_store_page', 'current_api_page' ), true ) || $page_number - 1 !== (int) ( $run[ $cursor_column ] ?? -1 ) ) { // phpcs:ignore WordPress.PHP.YodaConditions.NotYoda -- Both comparisons use runtime values.
+					$this->rollback();
+					$open = false;
+					return '';
+				}
+			} elseif ( '' !== $run_status || '' !== $cursor_column || '' !== $claim_token ) {
+				$this->rollback();
+				$open = false;
+				return '';
+			}
+
+			$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+			$intent = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d AND intent_token = %s FOR UPDATE", $intent_id, $intent_token ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$valid  = is_array( $intent ) && '' === (string) ( $wpdb->last_error ?? '' ) &&
+				(int) $intent['run_id'] === $run_id && hash_equals( (string) $intent['claim_token'], $claim_token ) &&
+				(int) $intent['claim_generation'] === $claim_generation && (string) $intent['action_type'] === $action_type &&
+				(string) $intent['hook'] === $hook && (int) $intent['page_number'] === $page_number;
+			$status = is_array( $intent ) ? (string) ( $intent['status'] ?? '' ) : '';
+			$leased = 'running' === $status && '' !== (string) ( $intent['lease_expires_at'] ?? '' ) && (string) $intent['lease_expires_at'] <= $now;
+			if ( ! $valid || ( ! in_array( $status, array( 'dispatching', 'dispatched' ), true ) && ! $leased ) ) {
+				$this->rollback();
+				$open = false;
+				return '';
+			}
+			$result = $wpdb->update(
+				$table,
+				array(
+					'status'           => 'running',
+					'execution_token'  => $execution,
+					'started_at'       => $now,
+					'lease_expires_at' => $expires,
+					'updated_at'       => $now,
+				),
+				array(
+					'id'              => $intent_id,
+					'intent_token'    => $intent_token,
+					'status'          => $status,
+					'execution_token' => (string) ( $intent['execution_token'] ?? '' ),
+				)
+			);
+			if ( false === $result || (int) $wpdb->rows_affected < 1 || false === $wpdb->query( 'COMMIT' ) ) {
+				$this->rollback();
+				$open = false;
+				return '';
+			}
+			$open = false;
+			return $execution;
+		} catch ( \Throwable $exception ) {
+			$this->rollback();
+			$open = false;
+			return '';
+		} finally {
+			if ( $open ) {
+				$this->rollback();
+			}
+		}
+	}
+
+	public function refresh_intent_execution( int $intent_id, string $intent_token, string $execution_token ): bool {
+		if ( ! $this->session_usable || '' === $execution_token ) {
+			return false;
+		}
+		global $wpdb;
+		$table   = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$now     = current_time( 'mysql', true );
+		$expires = gmdate( 'Y-m-d H:i:s', strtotime( $now ) + self::EXECUTION_LEASE_SECONDS );
+		$result  = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET lease_expires_at = %s, updated_at = %s WHERE id = %d AND intent_token = %s AND execution_token = %s AND status = %s AND lease_expires_at >= %s", $expires, $now, $intent_id, $intent_token, $execution_token, 'running', $now ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return false !== $result && (int) $wpdb->rows_affected > 0;
+	}
+
+	public function reclaim_expired_executions( int $limit = self::ACTION_BATCH_SIZE ): int {
+		if ( ! $this->session_usable ) {
+			return 0;
+		}
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$now   = current_time( 'mysql', true );
+		$this->clear_database_error();
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE status = %s AND lease_expires_at IS NOT NULL AND lease_expires_at <= %s ORDER BY lease_expires_at ASC, id ASC LIMIT %d", 'running', $now, max( 1, min( self::ACTION_BATCH_SIZE, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $rows ) || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			return 0;
+		}
+		$reclaimed = 0;
+		foreach ( $rows as $row ) {
+			$result = $wpdb->update(
+				$table,
+				array(
+					'status'              => 'failed',
+					'action_scheduler_id' => null,
+					'execution_token'     => '',
+					'lease_expires_at'    => null,
+					'available_at'        => $now,
+					'updated_at'          => $now,
+				),
+				array(
+					'id'               => (int) $row['id'],
+					'intent_token'     => (string) $row['intent_token'],
+					'status'           => 'running',
+					'execution_token'  => (string) $row['execution_token'],
+					'lease_expires_at' => (string) $row['lease_expires_at'],
+				)
+			);
+			if ( false !== $result && (int) $wpdb->rows_affected > 0 ) {
+				++$reclaimed;
+			}
+		}
+		return $reclaimed;
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function dispatchable_intents( int $limit = self::ACTION_BATCH_SIZE ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$rows  = $wpdb->get_results(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table name.
+				"SELECT * FROM {$table} WHERE status IN (%s,%s) AND available_at <= %s AND attempts < %d ORDER BY id ASC LIMIT %d",
+				'pending',
+				'failed',
+				current_time( 'mysql', true ),
+				self::MAX_DISPATCH_ATTEMPTS,
+				max( 1, min( self::ACTION_BATCH_SIZE, $limit ) )
+			),
+			ARRAY_A
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function stale_dispatching_intents( int $limit = self::ACTION_BATCH_SIZE ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$now   = current_time( 'mysql', true );
+		$this->clear_database_error();
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE status = %s AND dispatch_token <> %s AND dispatch_lease_expires_at IS NOT NULL AND dispatch_lease_expires_at <= %s ORDER BY dispatch_lease_expires_at ASC, id ASC LIMIT %d", 'dispatching', '', $now, max( 1, min( self::ACTION_BATCH_SIZE, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) && '' === (string) ( $wpdb->last_error ?? '' ) ? $rows : array();
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function exhausted_intents( int $limit = self::ACTION_BATCH_SIZE ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE run_id > 0 AND status = %s AND attempts >= %d ORDER BY id ASC LIMIT %d", 'failed', self::MAX_DISPATCH_ATTEMPTS, max( 1, min( self::ACTION_BATCH_SIZE, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	public function mark_intent_dispatching( int $intent_id, string $intent_token ): string {
+		if ( ! $this->session_usable || $intent_id < 1 || '' === $intent_token ) {
+			return '';
+		}
+		global $wpdb;
+		$table     = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$now       = current_time( 'mysql', true );
+		$expires   = gmdate( 'Y-m-d H:i:s', strtotime( $now ) + self::DISPATCH_LEASE_SECONDS );
+		$ownership = $this->new_lock_token();
+		$result    = $wpdb->query(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table name.
+				"UPDATE {$table} SET status = %s, dispatch_token = %s, dispatch_started_at = %s, dispatch_lease_expires_at = %s, last_attempt_at = %s, updated_at = %s WHERE id = %d AND intent_token = %s AND status IN (%s,%s) AND available_at <= %s AND attempts < %d",
+				'dispatching',
+				$ownership,
+				$now,
+				$expires,
+				$now,
+				$now,
+				$intent_id,
+				$intent_token,
+				'pending',
+				'failed',
+				$now,
+				self::MAX_DISPATCH_ATTEMPTS
+			)
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return false !== $result && 1 === (int) $wpdb->rows_affected ? $ownership : '';
+	}
+
+	public function mark_intent_dispatched( int $intent_id, string $intent_token, string $dispatch_token, int $scheduler_id ): bool {
+		if ( '' === $dispatch_token || $scheduler_id < 1 ) {
+			return false;
+		}
+		for ( $attempt = 0; $attempt < 3; ++$attempt ) {
+			$intent = $this->action_intent( $intent_id, $intent_token );
+			if ( ! $intent || ! hash_equals( (string) ( $intent['dispatch_token'] ?? '' ), $dispatch_token ) || ! in_array( (string) $intent['status'], array( 'dispatching', 'running', 'completed' ), true ) ) {
+				return false;
+			}
+			$recorded = (int) ( $intent['action_scheduler_id'] ?? 0 );
+			if ( $recorded > 0 ) {
+				return false;
+			}
+			$status = (string) $intent['status'];
+			global $wpdb;
+			$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+			$result = $wpdb->update(
+				$table,
+				array(
+					'status'                    => 'dispatching' === $status ? 'dispatched' : $status,
+					'action_scheduler_id'       => $scheduler_id,
+					'attempts'                  => (int) $intent['attempts'] + 1,
+					'dispatch_token'            => '',
+					'dispatch_started_at'       => null,
+					'dispatch_lease_expires_at' => null,
+					'updated_at'                => current_time( 'mysql', true ),
+				),
+				array(
+					'id'             => $intent_id,
+					'intent_token'   => $intent_token,
+					'status'         => $status,
+					'dispatch_token' => $dispatch_token,
+				)
+			);
+			if ( false !== $result && 1 === (int) $wpdb->rows_affected ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public function mark_intent_dispatch_failed( int $intent_id, string $intent_token, string $dispatch_token ): bool {
+		$intent = $this->action_intent( $intent_id, $intent_token );
+		if ( ! $intent || 'dispatching' !== (string) $intent['status'] || '' === $dispatch_token || ! hash_equals( (string) ( $intent['dispatch_token'] ?? '' ), $dispatch_token ) ) {
+			return false;
+		}
+		$attempts = (int) $intent['attempts'] + 1;
+		$delay    = min( 3600, 30 * ( 2 ** min( 6, $attempts - 1 ) ) );
+		global $wpdb;
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$result = $wpdb->update(
+			$table,
+			array(
+				'status'                    => 'failed',
+				'attempts'                  => $attempts,
+				'available_at'              => gmdate( 'Y-m-d H:i:s', strtotime( current_time( 'mysql', true ) ) + $delay ),
+				'dispatch_token'            => '',
+				'dispatch_started_at'       => null,
+				'dispatch_lease_expires_at' => null,
+				'updated_at'                => current_time( 'mysql', true ),
+			),
+			array(
+				'id'             => $intent_id,
+				'intent_token'   => $intent_token,
+				'status'         => 'dispatching',
+				'dispatch_token' => $dispatch_token,
+			)
+		);
+		return false !== $result && 1 === (int) $wpdb->rows_affected;
+	}
+
+	public function release_expired_dispatch( int $intent_id, string $intent_token, string $dispatch_token, string $lease_expires_at ): bool {
+		$now = current_time( 'mysql', true );
+		if ( '' === $dispatch_token || '' === $lease_expires_at || $lease_expires_at > $now ) {
+			return false;
+		}
+		global $wpdb;
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$result = $wpdb->update(
+			$table,
+			array(
+				'status'                    => 'failed',
+				'available_at'              => $now,
+				'dispatch_token'            => '',
+				'dispatch_started_at'       => null,
+				'dispatch_lease_expires_at' => null,
+				'updated_at'                => $now,
+			),
+			array(
+				'id'                        => $intent_id,
+				'intent_token'              => $intent_token,
+				'status'                    => 'dispatching',
+				'dispatch_token'            => $dispatch_token,
+				'dispatch_lease_expires_at' => $lease_expires_at,
+			)
+		);
+		return false !== $result && 1 === (int) $wpdb->rows_affected;
+	}
+
+	public function complete_intent( int $intent_id, string $intent_token ): bool {
+		return $this->update_intent( $intent_id, $intent_token, array( 'dispatched' ), array( 'status' => 'completed' ) );
+	}
+
+	public function complete_intent_execution( int $intent_id, string $intent_token, string $execution_token ): bool {
+		if ( '' === $execution_token ) {
+			return false;
+		}
+		global $wpdb;
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$result = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET status = %s, updated_at = %s WHERE id = %d AND intent_token = %s AND status = %s AND execution_token = %s AND lease_expires_at >= %s", 'completed', current_time( 'mysql', true ), $intent_id, $intent_token, 'running', $execution_token, current_time( 'mysql', true ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return false !== $result && (int) $wpdb->rows_affected > 0;
+	}
+
+	public function cancel_intent( int $intent_id, string $intent_token ): bool {
+		return $this->update_intent( $intent_id, $intent_token, array( 'cancel_requested' ), array( 'status' => 'cancelled' ) );
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function cancellation_intents( int $limit = self::ACTION_BATCH_SIZE ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE status = %s ORDER BY id ASC LIMIT %d", 'cancel_requested', max( 1, min( self::ACTION_BATCH_SIZE, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function cleanup_runs( int $limit = self::ACTION_BATCH_SIZE ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE status IN (%s,%s) ORDER BY id ASC LIMIT %d", 'cancelling', 'recovering', max( 1, min( self::ACTION_BATCH_SIZE, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	public function mark_maintenance_intents_cancel_requested(): bool {
+		global $wpdb;
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$result = $wpdb->query(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table name.
+				"UPDATE {$table} SET status = %s, updated_at = %s WHERE run_id = 0 AND status IN (%s,%s,%s,%s,%s)",
+				'cancel_requested',
+				current_time( 'mysql', true ),
+				'pending',
+				'dispatching',
+				'dispatched',
+				'failed',
+				'running'
+			)
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return false !== $result;
+	}
+
+	public function mark_claim_intents_cancel_requested( int $run_id, string $claim_token, int $claim_generation ): bool {
+		global $wpdb;
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$result = $wpdb->query(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table name.
+				"UPDATE {$table} SET status = %s, updated_at = %s WHERE run_id = %d AND claim_token = %s AND claim_generation = %d AND status IN (%s,%s,%s,%s,%s)",
+				'cancel_requested',
+				current_time( 'mysql', true ),
+				$run_id,
+				$claim_token,
+				$claim_generation,
+				'pending',
+				'dispatching',
+				'dispatched',
+				'failed',
+				'running'
+			)
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return false !== $result;
+	}
+
+	public function has_open_claim_intents( int $run_id, string $claim_token, int $claim_generation ): bool {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$this->clear_database_error();
+		$id = $wpdb->get_var(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internally constructed table name.
+				"SELECT id FROM {$table} WHERE run_id = %d AND claim_token = %s AND claim_generation = %d AND status IN (%s,%s,%s,%s,%s,%s) LIMIT 1",
+				$run_id,
+				$claim_token,
+				$claim_generation,
+				'pending',
+				'dispatching',
+				'dispatched',
+				'failed',
+				'cancel_requested',
+				'running'
+			)
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return '' !== (string) ( $wpdb->last_error ?? '' ) || null !== $id;
+	}
+
+	/**
+	 * @param list<string>        $statuses Allowed current statuses.
+	 * @param array<string,mixed> $fields   Replacement fields.
+	 */
+	private function update_intent( int $intent_id, string $intent_token, array $statuses, array $fields ): bool {
+		if ( ! $this->session_usable || '' === $intent_token ) {
+			return false;
+		}
+		global $wpdb;
+		$table                = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$fields['updated_at'] = current_time( 'mysql', true );
+		$set                  = array();
+		$args                 = array();
+		foreach ( $fields as $column => $value ) {
+			$set[]  = $column . ' = %s';
+			$args[] = null === $value ? null : (string) $value;
+		}
+		$args[]       = $intent_id;
+		$args[]       = $intent_token;
+		$placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+		$args         = array_merge( $args, $statuses );
+		$result       = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET " . implode( ', ', $set ) . " WHERE id = %d AND intent_token = %s AND status IN ({$placeholders})", ...$args ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+		if ( false === $result ) {
+			return false;
+		}
+		if ( (int) $wpdb->rows_affected > 0 ) {
+			return true;
+		}
+		$current = $this->action_intent( $intent_id, $intent_token );
+		if ( ! $current ) {
+			return false;
+		}
+		foreach ( $fields as $column => $value ) {
+			if ( (string) ( $current[ $column ] ?? '' ) !== (string) ( $value ?? '' ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function clear_database_error(): void {
+		global $wpdb;
+		if ( property_exists( $wpdb, 'last_error' ) ) {
+			$wpdb->last_error = '';
+		}
 	}
 
 	/** @return list<array<string,mixed>> */
@@ -437,109 +1408,232 @@ final class DryRunRepository {
 	}
 
 	public function purge_expired(): int {
-		$now            = strtotime( current_time( 'mysql', true ) );
-		$completed_keep = $this->latest_completed_ids();
-		$deleted        = 0;
-		foreach ( $this->finished_runs() as $run ) {
-			if ( $deleted >= self::PURGE_BATCH_SIZE ) {
-				break;
-			}
-			$status = (string) $run['status'];
-			if ( in_array( $status, self::ACTIVE_STATUSES, true ) ) {
-				continue;
-			}
-			$days = match ( $status ) {
-				'failed'    => self::FAILED_RETENTION_DAYS,
-				'cancelled' => self::CANCELLED_RETENTION_DAYS,
-				default     => self::COMPLETED_RETENTION_DAYS,
-			};
-			$anchor = (string) ( $run['completed_at'] ?? '' );
-			if ( '' === $anchor ) {
-				$anchor = (string) ( $run['updated_at'] ?? '' );
-			}
-			$age = $now - strtotime( $anchor );
-			if ( $age < $days * DAY_IN_SECONDS ) {
-				continue;
-			}
-			if ( 'completed' === $status && in_array( (int) $run['id'], $completed_keep, true ) ) {
-				continue;
-			}
-			$deleted += $this->delete_run( (int) $run['id'] ) ? 1 : 0;
+		$deleted = 0;
+		foreach ( $this->purge_candidate_ids( self::PURGE_BATCH_SIZE ) as $run_id ) {
+			$deleted += $this->delete_run( $run_id ) ? 1 : 0;
 		}
 		return $deleted;
 	}
 
 	public function has_purge_remaining(): bool {
-		return $this->purge_candidate_count() > 0;
-	}
-
-	private function purge_candidate_count(): int {
-		$now            = strtotime( current_time( 'mysql', true ) );
-		$completed_keep = $this->latest_completed_ids();
-		$count          = 0;
-		foreach ( $this->finished_runs() as $run ) {
-			$status = (string) $run['status'];
-			$days   = match ( $status ) {
-				'failed'    => self::FAILED_RETENTION_DAYS,
-				'cancelled' => self::CANCELLED_RETENTION_DAYS,
-				default     => self::COMPLETED_RETENTION_DAYS,
-			};
-			$anchor = (string) ( $run['completed_at'] ?? '' );
-			if ( '' === $anchor ) {
-				$anchor = (string) ( $run['updated_at'] ?? '' );
-			}
-			if ( $now - strtotime( $anchor ) < $days * DAY_IN_SECONDS ) {
-				continue;
-			}
-			if ( 'completed' === $status && in_array( (int) $run['id'], $completed_keep, true ) ) {
-				continue;
-			}
-			++$count;
-		}
-		return $count;
+		return array() !== $this->purge_candidate_ids( 1 );
 	}
 
 	/** @return list<int> */
-	private function latest_completed_ids(): array {
+	private function purge_candidate_ids( int $limit ): array {
 		global $wpdb;
-		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-		$ids   = array();
-		foreach ( array( 'qa', 'local' ) as $environment ) {
-			$id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE environment = %s AND status = %s ORDER BY id DESC LIMIT 1", $environment, 'completed' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			if ( $id > 0 ) {
-				$ids[] = $id;
-			}
+		$table            = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+		$now              = strtotime( current_time( 'mysql', true ) );
+		$completed_cutoff = gmdate( 'Y-m-d H:i:s', $now - self::COMPLETED_RETENTION_DAYS * DAY_IN_SECONDS );
+		$cancelled_cutoff = gmdate( 'Y-m-d H:i:s', $now - self::CANCELLED_RETENTION_DAYS * DAY_IN_SECONDS );
+		$failed_cutoff    = gmdate( 'Y-m-d H:i:s', $now - self::FAILED_RETENTION_DAYS * DAY_IN_SECONDS );
+		$sql              = "SELECT id FROM {$table} r WHERE (" .
+			'(r.status = %s AND COALESCE(r.completed_at,r.updated_at) < %s AND r.id NOT IN (' .
+			"SELECT keep_id FROM (SELECT MAX(id) AS keep_id FROM {$table} WHERE status = %s GROUP BY environment) latest_completed)) " .
+			'OR (r.status = %s AND COALESCE(r.completed_at,r.updated_at) < %s) ' .
+			'OR (r.status = %s AND COALESCE(r.completed_at,r.updated_at) < %s)) ORDER BY r.id ASC LIMIT %d';
+		$rows             = $wpdb->get_results( $wpdb->prepare( $sql, 'completed', $completed_cutoff, 'completed', 'cancelled', $cancelled_cutoff, 'failed', $failed_cutoff, max( 1, $limit ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$ids              = array();
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			$ids[] = (int) $row['id'];
 		}
 		return $ids;
 	}
 
-	/** @return list<array<string,mixed>> */
-	private function finished_runs(): array {
-		global $wpdb;
-		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-		$rows  = $wpdb->get_results( "SELECT id, status, environment, completed_at, updated_at FROM {$table} WHERE status IN ('completed','cancelled','failed') ORDER BY id ASC", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		return is_array( $rows ) ? $rows : array();
-	}
-
 	private function delete_run( int $run_id ): bool {
 		global $wpdb;
-		$wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_dry_run_items', array( 'run_id' => $run_id ), array( '%d' ) );
-		$wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_store_identifiers', array( 'run_id' => $run_id ), array( '%d' ) );
-		return false !== $wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_dry_runs', array( 'id' => $run_id ), array( '%d' ) );
-	}
-
-	/** @param Closure():void $write */
-	private function with_active_run( int $run_id, Closure $write ): bool {
-		global $wpdb;
-		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
-		$wpdb->query( 'START TRANSACTION' );
-		$active = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE id = %d AND status IN (%s,%s,%s) FOR UPDATE", $run_id, self::ACTIVE_STATUSES[0], self::ACTIVE_STATUSES[1], self::ACTIVE_STATUSES[2] ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		if ( $active !== $run_id ) {
-			$wpdb->query( 'ROLLBACK' );
+		if ( ! $this->session_usable || false === $wpdb->query( 'START TRANSACTION' ) ) {
 			return false;
 		}
-		$write();
-		$wpdb->query( 'COMMIT' );
+		$open = true;
+		try {
+			if ( false === $wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_dry_run_actions', array( 'run_id' => $run_id ), array( '%d' ) ) ||
+				false === $wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_dry_run_items', array( 'run_id' => $run_id ), array( '%d' ) ) ||
+				false === $wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_store_identifiers', array( 'run_id' => $run_id ), array( '%d' ) ) ||
+				false === $wpdb->delete( $wpdb->prefix . 'ideaxperts_ea_dry_runs', array( 'id' => $run_id ), array( '%d' ) ) ) {
+					$this->rollback();
+					$open = false;
+					return false;
+			}
+			if ( false === $wpdb->query( 'COMMIT' ) ) {
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+				$open = false;
+				return true;
+		} catch ( \Throwable $exception ) {
+			$this->rollback();
+			$open = false;
+			return false;
+		} finally {
+			if ( $open ) {
+				$this->rollback();
+			}
+		}
+	}
+
+	/** @param array<string,mixed> $fields */
+	private function update_run_row( int $run_id, array $fields ): bool {
+		if ( ! $this->session_usable ) {
+			return false;
+		}
+		global $wpdb;
+		$data               = array_intersect_key( $fields, array_flip( self::RUN_FIELDS ) );
+		$data['updated_at'] = current_time( 'mysql', true );
+		return false !== $wpdb->update( $wpdb->prefix . 'ideaxperts_ea_dry_runs', $data, array( 'id' => $run_id ) );
+	}
+
+	private function add_review_flag_locked( int $run_id, string $normalized_upc, string $flag ): bool {
+		global $wpdb;
+		$this->clear_database_error();
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT id, review_flags FROM {$table} WHERE run_id = %d AND normalized_upc = %s", $run_id, $normalized_upc ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $rows ) || ( isset( $wpdb->last_error ) && '' !== $wpdb->last_error ) ) {
+			return false;
+		}
+		foreach ( $rows as $row ) {
+			$flags = MatchClassifier::sanitize_flags( json_decode( (string) $row['review_flags'], true ) );
+			if ( in_array( $flag, $flags, true ) ) {
+				continue;
+			}
+			$flags[] = $flag;
+			if ( false === $wpdb->update(
+				$table,
+				array(
+					'review_flags' => wp_json_encode( MatchClassifier::sanitize_flags( $flags ) ),
+					'updated_at'   => current_time( 'mysql', true ),
+				),
+				array( 'id' => (int) $row['id'] )
+			) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * @param Closure():bool                                      $write
+	 * @param array{action_type:string,hook:string,page:int}|null $next
+	 */
+	private function with_running_intent( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $action_type, string $hook, int $page, string $run_status, string $cursor_column, Closure $write, ?array $next ): bool {
+		global $wpdb;
+		if ( ! $this->session_usable || '' === $execution_token || false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return false;
+		}
+		$open = true;
+		try {
+			$run_table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+			$run       = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$run_table} WHERE id = %d AND claim_token = %s AND claim_generation = %d FOR UPDATE", $run_id, $claim_token, $claim_generation ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( ! is_array( $run ) || '' !== (string) ( $wpdb->last_error ?? '' ) || $run_status !== (string) ( $run['status'] ?? '' ) || ! in_array( $cursor_column, array( 'current_store_page', 'current_api_page' ), true ) || $page - 1 !== (int) ( $run[ $cursor_column ] ?? -1 ) ) { // phpcs:ignore WordPress.PHP.YodaConditions.NotYoda -- Both comparisons use runtime values.
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+			$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+			$intent = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d AND intent_token = %s FOR UPDATE", $intent_id, $intent_token ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$now    = current_time( 'mysql', true );
+			$valid  = is_array( $intent ) && '' === (string) ( $wpdb->last_error ?? '' ) && 'running' === (string) ( $intent['status'] ?? '' ) &&
+				hash_equals( (string) ( $intent['execution_token'] ?? '' ), $execution_token ) && (string) ( $intent['lease_expires_at'] ?? '' ) >= $now &&
+				(int) $intent['run_id'] === $run_id && hash_equals( (string) $intent['claim_token'], $claim_token ) && (int) $intent['claim_generation'] === $claim_generation &&
+				(string) $intent['action_type'] === $action_type && (string) $intent['hook'] === $hook && (int) $intent['page_number'] === $page;
+			if ( ! $valid || true !== $write() ) {
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+			if ( null !== $next && $this->insert_action_intent( $run_id, $claim_token, $claim_generation, $next['action_type'], $next['hook'], $next['page'] ) < 1 ) {
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+			$completed = $wpdb->update(
+				$table,
+				array(
+					'status'     => 'completed',
+					'updated_at' => $now,
+				),
+				array(
+					'id'              => $intent_id,
+					'intent_token'    => $intent_token,
+					'status'          => 'running',
+					'execution_token' => $execution_token,
+				)
+			);
+			if ( false === $completed || (int) $wpdb->rows_affected < 1 || false === $wpdb->query( 'COMMIT' ) ) {
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+			$open = false;
+			return true;
+		} catch ( \Throwable $exception ) {
+			$this->rollback();
+			$open = false;
+			return false;
+		} finally {
+			if ( $open ) {
+				$this->rollback();
+			}
+		}
+	}
+
+	/** @param Closure():bool $write */
+	private function with_active_run( int $run_id, string $claim_token, Closure $write, int $claim_generation = 0 ): bool {
+		return $this->with_locked_run( $run_id, $claim_token, array( 'pending', 'scanning_store', 'fetching_catalog' ), static fn( array $run ): bool => $write(), $claim_generation );
+	}
+
+	/** @param list<string> $statuses @param Closure(array<string,mixed>):bool $write */
+	public function with_locked_run( int $run_id, string $claim_token, array $statuses, Closure $write, int $claim_generation = 0 ): bool {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+		if ( ! $this->session_usable || false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return false;
+		}
+		$open = true;
+		try {
+			$placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+			$args         = array( $run_id, $claim_token );
+			$generation   = $claim_generation > 0 ? ' AND claim_generation = %d' : '';
+			if ( $claim_generation > 0 ) {
+				$args[] = $claim_generation;
+			}
+			$args = array_merge( $args, $statuses );
+			$row  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d AND claim_token = %s{$generation} AND status IN ({$placeholders}) FOR UPDATE", ...$args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+			if ( ! is_array( $row ) || ( isset( $wpdb->last_error ) && '' !== $wpdb->last_error ) || true !== $write( $row ) ) {
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+			if ( false === $wpdb->query( 'COMMIT' ) ) {
+				$this->rollback();
+				$open = false;
+				return false;
+			}
+			$open = false;
+			return true;
+		} catch ( \Throwable $exception ) {
+			$this->rollback();
+			$open = false;
+			return false;
+		} finally {
+			if ( $open ) {
+				$this->rollback();
+			}
+		}
+	}
+
+	public function session_usable(): bool {
+		return $this->session_usable;
+	}
+
+	private function rollback(): bool {
+		global $wpdb;
+		$result = $wpdb->query( 'ROLLBACK' );
+		if ( false === $result ) {
+			$this->session_usable = false;
+			return false;
+		}
 		return true;
 	}
 
@@ -547,17 +1641,18 @@ final class DryRunRepository {
 		return bin2hex( random_bytes( 16 ) );
 	}
 
-	private function lock_payload( string $token, int $run_id ): string {
+	private function lock_payload( string $token, int $run_id, int $generation ): string {
 		return (string) wp_json_encode(
 			array(
 				'token'      => $token,
 				'run_id'     => $run_id,
+				'generation' => $generation,
 				'claimed_at' => current_time( 'mysql', true ),
 			)
 		);
 	}
 
-	/** @return array{token:string,run_id:int,claimed_at:string}|null */
+	/** @return array{token:string,run_id:int,generation:int,claimed_at:string}|null */
 	private function parse_lock( string $value ): ?array {
 		$parsed = json_decode( $value, true );
 		if ( ! is_array( $parsed ) || ! isset( $parsed['token'], $parsed['run_id'] ) ) {
@@ -566,6 +1661,7 @@ final class DryRunRepository {
 		return array(
 			'token'      => (string) $parsed['token'],
 			'run_id'     => (int) $parsed['run_id'],
+			'generation' => max( 1, (int) ( $parsed['generation'] ?? 1 ) ),
 			'claimed_at' => (string) ( $parsed['claimed_at'] ?? '' ),
 		);
 	}
@@ -577,6 +1673,9 @@ final class DryRunRepository {
 	}
 
 	private function insert_lock( string $value ): bool {
+		if ( ! $this->session_usable ) {
+			return false;
+		}
 		global $wpdb;
 		$result = $wpdb->query( $wpdb->prepare( "INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)", self::LOCK_OPTION, $value, 'no' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$this->flush_lock_cache();
@@ -584,6 +1683,9 @@ final class DryRunRepository {
 	}
 
 	private function cas_update_lock( string $expected, string $replacement ): bool {
+		if ( ! $this->session_usable ) {
+			return false;
+		}
 		global $wpdb;
 		$result = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", $replacement, self::LOCK_OPTION, $expected ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$this->flush_lock_cache();
@@ -591,6 +1693,9 @@ final class DryRunRepository {
 	}
 
 	private function cas_delete_lock( string $expected ): bool {
+		if ( ! $this->session_usable ) {
+			return false;
+		}
 		global $wpdb;
 		if ( '' === $expected ) {
 			return false;
@@ -610,10 +1715,6 @@ final class DryRunRepository {
 		if ( $run_id > 0 ) {
 			$run = $this->run( $run_id );
 			if ( $run && in_array( (string) $run['status'], self::ACTIVE_STATUSES, true ) ) {
-				return;
-			}
-			if ( $run && ! in_array( (string) $run['status'], self::ACTIVE_STATUSES, true ) ) {
-				$this->cas_delete_lock( $current );
 				return;
 			}
 		}

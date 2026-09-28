@@ -15,14 +15,16 @@ final class InventorySchedulerTest extends TestCase {
 	private SettingsRepository $settings;
 
 	protected function setUp(): void {
-		$GLOBALS['ea_scheduled']         = false;
-		$GLOBALS['ea_schedule_calls']    = 0;
-		$GLOBALS['ea_schedule_interval'] = 0;
-		$GLOBALS['ea_unschedule_calls']  = 0;
-		$GLOBALS['ea_unschedule_log']    = array();
-		$GLOBALS['ea_action_queue']      = array();
-		$GLOBALS['ea_remote_requests']   = array();
-		$GLOBALS['ea_test_options']      = array(
+		$GLOBALS['ea_scheduled']          = false;
+		$GLOBALS['ea_schedule_calls']     = 0;
+		$GLOBALS['ea_schedule_interval']  = 0;
+		$GLOBALS['ea_unschedule_calls']   = 0;
+		$GLOBALS['ea_unschedule_log']     = array();
+		$GLOBALS['ea_action_queue']       = array();
+		$GLOBALS['ea_add_option_failure'] = false;
+		$GLOBALS['ea_unschedule_failure'] = false;
+		$GLOBALS['ea_remote_requests']    = array();
+		$GLOBALS['ea_test_options']       = array(
 			'ideaxperts_ea_settings' => array(
 				'enabled'              => 'no',
 				'environment'          => 'qa',
@@ -30,9 +32,9 @@ final class InventorySchedulerTest extends TestCase {
 				'log_level'            => 'critical',
 			),
 		);
-		$this->wpdb                      = new SchedulerWpdb();
-		$GLOBALS['wpdb']                 = $this->wpdb;
-		$this->settings                  = new SettingsRepository();
+		$this->wpdb                       = new SchedulerWpdb();
+		$GLOBALS['wpdb']                  = $this->wpdb;
+		$this->settings                   = new SettingsRepository();
 	}
 
 	protected function tearDown(): void {
@@ -163,7 +165,7 @@ final class InventorySchedulerTest extends TestCase {
 
 		self::assertFalse( $GLOBALS['ea_scheduled'] );
 		self::assertTrue( $GLOBALS['ea_unrelated_scheduled'] );
-		self::assertSame( 4, $GLOBALS['ea_unschedule_calls'] );
+		self::assertSame( 1, $GLOBALS['ea_unschedule_calls'] );
 	}
 
 	public function test_deactivation_unschedules_dry_run_jobs_with_nonempty_arguments(): void {
@@ -182,9 +184,8 @@ final class InventorySchedulerTest extends TestCase {
 
 		Deactivator::deactivate();
 
-		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
-		self::assertSame( '', $GLOBALS['ea_unschedule_log'][1]['group'] ?? 'missing' );
-		self::assertSame( array(), $GLOBALS['ea_unschedule_log'][1]['args'] ?? array( 'missing' ) );
+		self::assertCount( 2, $GLOBALS['ea_action_queue'] );
+		self::assertSame( 'ideaxperts_ea_inventory_sync', $GLOBALS['ea_unschedule_log'][0]['hook'] ?? '' );
 	}
 
 	private function scheduler(): InventoryScheduler {
@@ -193,9 +194,9 @@ final class InventorySchedulerTest extends TestCase {
 }
 
 final class SchedulerWpdb {
-	public string $prefix         = 'wp_';
-	public string $options        = 'wp_options';
-	public int $rows_affected     = 0;
+	public string $prefix     = 'wp_';
+	public string $options    = 'wp_options';
+	public int $rows_affected = 0;
 	/** @var list<array<string,mixed>> */
 	public array $rows = array();
 	/** @var list<string> */

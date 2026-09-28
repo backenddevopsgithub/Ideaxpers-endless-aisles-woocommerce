@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added schema 2.3.0 with a durable InnoDB dry-run scheduling outbox and immutable claim generations.
+- Separated plugin transactions from replaceable Action Scheduler storage, with exact-argument adoption and bounded reconciliation after ambiguous dispatches.
+- Added durable `cancelling` and `recovering` lifecycles, verified bounded unscheduling, stale-claim isolation, and generation-bound administrator cancellation.
+- Centralized rollback handling, poisoned failed database sessions, and made catalog aggregate-query failures abort page commits.
+
 ## 0.2.0 - 2026-09-25
 
 - Added QA-only, read-only Endless Aisles catalog dry runs using sequential `GET /api/products` pages.

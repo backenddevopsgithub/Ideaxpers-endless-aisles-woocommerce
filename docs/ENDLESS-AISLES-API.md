@@ -53,7 +53,7 @@ All API responses use WordPress's transport-level response limit and are rejecte
 
 ## Milestone 2 dry-run usage
 
-Catalog dry runs use only `GET /api/products` against QA with explicit `page` and `per_page=10` on every request, including page 1. Pages are processed sequentially. The implementation limits page number, per-page size, total records, response bytes, redirects, timeouts, attempts, Retry-After delay (30 seconds), and pagination loops. Relative pagination references are reduced to `page` and `per_page` and rebuilt on the known endpoint. Numeric JSON UPC values are rejected because leading zeros may already be lost.
+Catalog dry runs use only `GET /api/products` against QA with explicit `page` and `per_page=10` on every request, including page 1. Pages are processed sequentially. A bounded outbox reconciler performs scheduling and cancellation only; it never makes Endless Aisles requests. The implementation limits page number, per-page size, total records, response bytes, redirects, timeouts, attempts, Retry-After delay (30 seconds), and pagination loops. Relative pagination references are reduced to `page` and `per_page` and rebuilt on the known endpoint. Numeric JSON UPC values are rejected because leading zeros may already be lost.
 
 HTTP 429, 5xx, and transport timeouts receive at most three attempts with bounded backoff. Authentication/authorization responses (401/403), validation failures, malformed JSON, oversized responses, and unexpected structures are not retried. Empty `data` lists are valid. Logs contain event names, run/page identities, status, and bounded error classifications—not tokens, request URLs, or bodies.
 
