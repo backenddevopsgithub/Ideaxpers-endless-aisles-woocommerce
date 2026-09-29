@@ -4,7 +4,7 @@ namespace IdeaXperts\EndlessAisles\Database;
 defined( 'ABSPATH' ) || exit;
 
 final class Schema {
-	public const VERSION = '2.3.0';
+	public const VERSION = '3.0.0';
 
 	/** @return list<string> */
 	public static function table_names( string $prefix ): array {
@@ -17,34 +17,48 @@ final class Schema {
 			$prefix . 'ideaxperts_ea_dry_run_items',
 			$prefix . 'ideaxperts_ea_store_identifiers',
 			$prefix . 'ideaxperts_ea_dry_run_actions',
+			$prefix . 'ideaxperts_ea_import_runs',
+			$prefix . 'ideaxperts_ea_import_items',
+			$prefix . 'ideaxperts_ea_catalog_identities',
+			$prefix . 'ideaxperts_ea_store_identifier_reservations',
+			$prefix . 'ideaxperts_ea_import_actions',
+			$prefix . 'ideaxperts_ea_import_events',
+			$prefix . 'ideaxperts_ea_vendor_snapshots',
 		);
 	}
 
 	/** @return array<string,list<string>> */
 	public static function required_columns( string $prefix ): array {
 		return array(
-			$prefix . 'ideaxperts_ea_mappings'          => array( 'id', 'wc_product_id', 'wc_variation_id', 'ea_product_id', 'ea_option_id', 'upc', 'normalized_upc', 'mapping_status', 'last_synced_at', 'created_at', 'updated_at' ),
-			$prefix . 'ideaxperts_ea_sync_runs'         => array( 'id', 'run_type', 'status', 'started_at', 'completed_at', 'processed_count', 'success_count', 'failure_count', 'message', 'created_at', 'updated_at' ),
-			$prefix . 'ideaxperts_ea_logs'              => array( 'id', 'level', 'message', 'context', 'created_at' ),
-			$prefix . 'ideaxperts_ea_order_submissions' => array( 'id', 'wc_order_id', 'idempotency_key', 'status', 'attempt_count', 'ea_order_id', 'last_error', 'submitted_at', 'created_at', 'updated_at' ),
-			$prefix . 'ideaxperts_ea_dry_runs'          => array( 'id', 'status', 'environment', 'started_by', 'started_at', 'updated_at', 'completed_at', 'current_api_page', 'current_store_page', 'products_inspected', 'variations_inspected', 'store_records_inspected', 'match_counters', 'warning_counters', 'error_summary', 'resume_cursor', 'cancellation_at', 'last_heartbeat_at', 'claim_token', 'claim_generation' ),
-			$prefix . 'ideaxperts_ea_dry_run_items'     => array( 'id', 'run_id', 'ea_product_id', 'ea_option_id', 'original_upc', 'normalized_upc', 'wc_product_id', 'wc_variation_id', 'classification', 'review_flags', 'review_reason', 'vendor_title', 'vendor_option_description', 'retail_price', 'wholesale_price', 'map_price', 'purchasable', 'discontinued', 'created_at', 'updated_at' ),
-			$prefix . 'ideaxperts_ea_store_identifiers' => array( 'id', 'run_id', 'wc_product_id', 'wc_variation_id', 'product_type', 'product_status', 'title', 'identifier_type', 'identifier_source', 'original_identifier', 'normalized_identifier', 'parent_product_id', 'ea_product_id', 'ea_option_id', 'created_at' ),
-			$prefix . 'ideaxperts_ea_dry_run_actions'   => array( 'id', 'run_id', 'claim_token', 'claim_generation', 'intent_token', 'action_type', 'hook', 'page_number', 'status', 'action_scheduler_id', 'attempts', 'available_at', 'last_attempt_at', 'dispatch_token', 'dispatch_started_at', 'dispatch_lease_expires_at', 'execution_token', 'started_at', 'lease_expires_at', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_mappings'           => array( 'id', 'source_scope', 'environment', 'wc_product_id', 'wc_variation_id', 'ea_product_id', 'ea_option_id', 'upc', 'normalized_upc', 'mapping_status', 'last_synced_at', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_sync_runs'          => array( 'id', 'run_type', 'status', 'started_at', 'completed_at', 'processed_count', 'success_count', 'failure_count', 'message', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_logs'               => array( 'id', 'level', 'message', 'context', 'created_at' ),
+			$prefix . 'ideaxperts_ea_order_submissions'  => array( 'id', 'wc_order_id', 'idempotency_key', 'status', 'attempt_count', 'ea_order_id', 'last_error', 'submitted_at', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_dry_runs'           => array( 'id', 'status', 'source_scope', 'environment', 'started_by', 'started_at', 'updated_at', 'completed_at', 'current_api_page', 'current_store_page', 'products_inspected', 'variations_inspected', 'store_records_inspected', 'match_counters', 'warning_counters', 'error_summary', 'resume_cursor', 'cancellation_at', 'last_heartbeat_at', 'claim_token', 'claim_generation' ),
+			$prefix . 'ideaxperts_ea_dry_run_items'      => array( 'id', 'run_id', 'source_scope', 'environment', 'ea_product_id', 'ea_option_id', 'original_upc', 'normalized_upc', 'wc_product_id', 'wc_variation_id', 'classification', 'review_flags', 'review_reason', 'vendor_title', 'vendor_option_description', 'retail_price', 'wholesale_price', 'map_price', 'purchasable', 'discontinued', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_store_identifiers'  => array( 'id', 'run_id', 'wc_product_id', 'wc_variation_id', 'product_type', 'product_status', 'title', 'identifier_type', 'identifier_source', 'original_identifier', 'normalized_identifier', 'parent_product_id', 'ea_product_id', 'ea_option_id', 'created_at' ),
+			$prefix . 'ideaxperts_ea_dry_run_actions'    => array( 'id', 'run_id', 'source_scope', 'environment', 'claim_token', 'claim_generation', 'intent_token', 'action_type', 'hook', 'page_number', 'status', 'action_scheduler_id', 'attempts', 'available_at', 'last_attempt_at', 'dispatch_token', 'dispatch_started_at', 'dispatch_lease_expires_at', 'execution_token', 'started_at', 'lease_expires_at', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_import_runs'        => array( 'id', 'dry_run_id', 'source_scope', 'environment', 'status', 'approval_generation', 'approved_by', 'approved_at', 'approval_manifest', 'manifest_hash', 'matching_settings_hash', 'policy_version', 'claim_token', 'claim_generation', 'cancellation_requested_at', 'cancellation_authoritative_at', 'item_count', 'applied_count', 'issue_count', 'last_heartbeat_at', 'failure_summary', 'created_at', 'updated_at', 'completed_at' ),
+			$prefix . 'ideaxperts_ea_import_items'       => array( 'id', 'import_run_id', 'dry_run_item_id', 'entity_kind', 'approved_action', 'group_key', 'ea_product_id', 'ea_option_id', 'vendor_sku', 'normalized_upc', 'expected_vendor_hash', 'expected_local_hash', 'expected_mapping_hash', 'expected_live_hash', 'target_wc_product_id', 'target_wc_variation_id', 'source_scope', 'environment', 'approval_generation', 'status', 'freshness_status', 'live_freshness_hash', 'live_freshness_token', 'live_freshness_at', 'attempt_count', 'retry_at', 'failure_code', 'execution_token', 'lease_expires_at', 'operation_uuid', 'apply_started_at', 'reconciliation_required', 'approved_by', 'approved_at', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_catalog_identities' => array( 'id', 'identity_key', 'source_scope', 'environment', 'entity_kind', 'ea_product_id', 'ea_option_id', 'owning_import_item_id', 'reservation_status', 'operation_uuid', 'wc_identity_key', 'wc_product_id', 'wc_variation_id', 'ownership_mode', 'vendor_state_hash', 'owner_token', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_store_identifier_reservations' => array( 'id', 'namespace', 'identifier_type', 'normalized_identifier', 'identifier_key', 'catalog_identity_id', 'owning_import_item_id', 'source_scope', 'environment', 'reservation_status', 'owner_token', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_import_actions'     => array( 'id', 'import_run_id', 'import_item_id', 'source_scope', 'environment', 'claim_generation', 'action_type', 'logical_key', 'hook', 'status', 'available_at', 'attempts', 'action_scheduler_id', 'dispatch_generation', 'dispatch_token', 'dispatch_started_at', 'dispatch_lease_expires_at', 'dispatched_at', 'execution_token', 'started_at', 'lease_expires_at', 'failure_code', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_import_events'      => array( 'id', 'import_run_id', 'import_item_id', 'dry_run_id', 'ea_product_id', 'ea_option_id', 'wc_product_id', 'wc_variation_id', 'event_type', 'actor_id', 'before_hash', 'after_hash', 'operation_uuid', 'ownership_token_hash', 'attempt', 'failure_code', 'event_data', 'created_at' ),
+			$prefix . 'ideaxperts_ea_vendor_snapshots'   => array( 'id', 'source_scope', 'environment', 'identity_key', 'ea_product_id', 'ea_option_id', 'payload', 'payload_hash', 'normalization_version', 'api_contract_version', 'fetched_at', 'created_at' ),
 		);
 	}
 
 	/** @return array<string,array<string,array{unique:bool,columns:list<string>}>> */
 	public static function required_indexes( string $prefix ): array {
 		return array(
-			$prefix . 'ideaxperts_ea_mappings'          => array(
+			$prefix . 'ideaxperts_ea_mappings'           => array(
 				'PRIMARY'        => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
 				),
 				'ea_identity'    => array(
 					'unique'  => true,
-					'columns' => array( 'ea_product_id', 'ea_option_id' ),
+					'columns' => array( 'source_scope', 'ea_product_id', 'ea_option_id' ),
 				),
 				'wc_identity'    => array(
 					'unique'  => true,
@@ -63,7 +77,7 @@ final class Schema {
 					'columns' => array( 'last_synced_at' ),
 				),
 			),
-			$prefix . 'ideaxperts_ea_sync_runs'         => array(
+			$prefix . 'ideaxperts_ea_sync_runs'          => array(
 				'PRIMARY'         => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -77,7 +91,7 @@ final class Schema {
 					'columns' => array( 'created_at' ),
 				),
 			),
-			$prefix . 'ideaxperts_ea_logs'              => array(
+			$prefix . 'ideaxperts_ea_logs'               => array(
 				'PRIMARY'    => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -91,7 +105,7 @@ final class Schema {
 					'columns' => array( 'created_at' ),
 				),
 			),
-			$prefix . 'ideaxperts_ea_order_submissions' => array(
+			$prefix . 'ideaxperts_ea_order_submissions'  => array(
 				'PRIMARY'         => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -113,7 +127,7 @@ final class Schema {
 					'columns' => array( 'created_at' ),
 				),
 			),
-			$prefix . 'ideaxperts_ea_dry_runs'          => array(
+			$prefix . 'ideaxperts_ea_dry_runs'           => array(
 				'PRIMARY'             => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -131,7 +145,7 @@ final class Schema {
 					'columns' => array( 'status', 'completed_at' ),
 				),
 			),
-			$prefix . 'ideaxperts_ea_dry_run_items'     => array(
+			$prefix . 'ideaxperts_ea_dry_run_items'      => array(
 				'PRIMARY'            => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -152,8 +166,12 @@ final class Schema {
 					'unique'  => false,
 					'columns' => array( 'wc_product_id', 'wc_variation_id' ),
 				),
+				'run_source'         => array(
+					'unique'  => false,
+					'columns' => array( 'run_id', 'source_scope' ),
+				),
 			),
-			$prefix . 'ideaxperts_ea_store_identifiers' => array(
+			$prefix . 'ideaxperts_ea_store_identifiers'  => array(
 				'PRIMARY'             => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -171,7 +189,7 @@ final class Schema {
 					'columns' => array( 'run_id', 'ea_product_id', 'ea_option_id' ),
 				),
 			),
-			$prefix . 'ideaxperts_ea_dry_run_actions'   => array(
+			$prefix . 'ideaxperts_ea_dry_run_actions'    => array(
 				'PRIMARY'          => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
@@ -201,6 +219,164 @@ final class Schema {
 					'columns' => array( 'status', 'dispatch_lease_expires_at', 'id' ),
 				),
 			),
+			$prefix . 'ideaxperts_ea_import_runs'        => array(
+				'PRIMARY'            => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'dry_run_generation' => array(
+					'unique'  => true,
+					'columns' => array( 'dry_run_id', 'approval_generation' ),
+				),
+				'status_updated'     => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'updated_at' ),
+				),
+				'source_status'      => array(
+					'unique'  => false,
+					'columns' => array( 'source_scope', 'status' ),
+				),
+			),
+			$prefix . 'ideaxperts_ea_import_items'       => array(
+				'PRIMARY'        => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'run_entity'     => array(
+					'unique'  => true,
+					'columns' => array( 'import_run_id', 'entity_kind', 'ea_product_id', 'ea_option_id' ),
+				),
+				'run_dry_item'   => array(
+					'unique'  => true,
+					'columns' => array( 'import_run_id', 'dry_run_item_id' ),
+				),
+				'status_retry'   => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'retry_at', 'id' ),
+				),
+				'lease'          => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'lease_expires_at', 'id' ),
+				),
+				'group_status'   => array(
+					'unique'  => false,
+					'columns' => array( 'import_run_id', 'group_key', 'status' ),
+				),
+				'operation_uuid' => array(
+					'unique'  => true,
+					'columns' => array( 'operation_uuid' ),
+				),
+			),
+			$prefix . 'ideaxperts_ea_catalog_identities' => array(
+				'PRIMARY'         => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'identity_key'    => array(
+					'unique'  => true,
+					'columns' => array( 'identity_key' ),
+				),
+				'vendor_identity' => array(
+					'unique'  => true,
+					'columns' => array( 'source_scope', 'entity_kind', 'ea_product_id', 'ea_option_id' ),
+				),
+				'operation_uuid'  => array(
+					'unique'  => true,
+					'columns' => array( 'operation_uuid' ),
+				),
+				'wc_identity_key' => array(
+					'unique'  => true,
+					'columns' => array( 'wc_identity_key' ),
+				),
+				'owner_status'    => array(
+					'unique'  => false,
+					'columns' => array( 'owning_import_item_id', 'reservation_status' ),
+				),
+			),
+			$prefix . 'ideaxperts_ea_store_identifier_reservations' => array(
+				'PRIMARY'          => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'identifier_key'   => array(
+					'unique'  => true,
+					'columns' => array( 'identifier_key' ),
+				),
+				'store_identifier' => array(
+					'unique'  => true,
+					'columns' => array( 'namespace', 'identifier_type', 'normalized_identifier' ),
+				),
+				'identity_status'  => array(
+					'unique'  => false,
+					'columns' => array( 'catalog_identity_id', 'reservation_status' ),
+				),
+			),
+			$prefix . 'ideaxperts_ea_import_actions'     => array(
+				'PRIMARY'          => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'logical_action'   => array(
+					'unique'  => true,
+					'columns' => array( 'logical_key' ),
+				),
+				'status_available' => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'available_at', 'id' ),
+				),
+				'dispatch_lease'   => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'dispatch_lease_expires_at', 'id' ),
+				),
+				'dispatched_lease' => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'dispatched_at', 'id' ),
+				),
+				'execution_lease'  => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'lease_expires_at', 'id' ),
+				),
+				'run_status'       => array(
+					'unique'  => false,
+					'columns' => array( 'import_run_id', 'status' ),
+				),
+				'scheduler_id'     => array(
+					'unique'  => false,
+					'columns' => array( 'action_scheduler_id' ),
+				),
+			),
+			$prefix . 'ideaxperts_ea_import_events'      => array(
+				'PRIMARY'      => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'run_created'  => array(
+					'unique'  => false,
+					'columns' => array( 'import_run_id', 'created_at', 'id' ),
+				),
+				'item_created' => array(
+					'unique'  => false,
+					'columns' => array( 'import_item_id', 'created_at', 'id' ),
+				),
+				'event_type'   => array(
+					'unique'  => false,
+					'columns' => array( 'event_type' ),
+				),
+			),
+			$prefix . 'ideaxperts_ea_vendor_snapshots'   => array(
+				'PRIMARY'              => array(
+					'unique'  => true,
+					'columns' => array( 'id' ),
+				),
+				'source_identity_hash' => array(
+					'unique'  => true,
+					'columns' => array( 'source_scope', 'identity_key', 'payload_hash' ),
+				),
+				'identity_fetched'     => array(
+					'unique'  => false,
+					'columns' => array( 'identity_key', 'fetched_at' ),
+				),
+			),
 		);
 	}
 
@@ -208,8 +384,10 @@ final class Schema {
 	public static function definitions( string $prefix, string $charset_collate = '' ): array {
 		$collation = ' ENGINE=InnoDB' . ( '' !== $charset_collate ? ' ' . $charset_collate : '' );
 		return array(
-			'mappings'          => "CREATE TABLE {$prefix}ideaxperts_ea_mappings (
+			'mappings'                      => "CREATE TABLE {$prefix}ideaxperts_ea_mappings (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ source_scope varchar(191) NOT NULL DEFAULT 'endless-aisles:qa',
+ environment varchar(16) NOT NULL DEFAULT 'qa',
  wc_product_id bigint(20) unsigned NOT NULL,
  wc_variation_id bigint(20) unsigned NOT NULL DEFAULT 0,
  ea_product_id varchar(191) NOT NULL,
@@ -221,13 +399,13 @@ final class Schema {
  created_at datetime NOT NULL,
  updated_at datetime NOT NULL,
  PRIMARY KEY  (id),
- UNIQUE KEY ea_identity (ea_product_id,ea_option_id),
+ UNIQUE KEY ea_identity (source_scope,ea_product_id,ea_option_id),
  UNIQUE KEY wc_identity (wc_product_id,wc_variation_id),
  KEY normalized_upc (normalized_upc),
  KEY mapping_status (mapping_status),
  KEY last_synced_at (last_synced_at)
 ){$collation};",
-			'sync_runs'         => "CREATE TABLE {$prefix}ideaxperts_ea_sync_runs (
+			'sync_runs'                     => "CREATE TABLE {$prefix}ideaxperts_ea_sync_runs (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  run_type varchar(32) NOT NULL,
  status varchar(32) NOT NULL DEFAULT 'pending',
@@ -243,7 +421,7 @@ final class Schema {
  KEY run_type_status (run_type,status),
  KEY created_at (created_at)
 ){$collation};",
-			'logs'              => "CREATE TABLE {$prefix}ideaxperts_ea_logs (
+			'logs'                          => "CREATE TABLE {$prefix}ideaxperts_ea_logs (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  level varchar(16) NOT NULL,
  message text NOT NULL,
@@ -253,7 +431,7 @@ final class Schema {
  KEY level (level),
  KEY created_at (created_at)
 ){$collation};",
-			'order_submissions' => "CREATE TABLE {$prefix}ideaxperts_ea_order_submissions (
+			'order_submissions'             => "CREATE TABLE {$prefix}ideaxperts_ea_order_submissions (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  wc_order_id bigint(20) unsigned NOT NULL,
  idempotency_key char(64) NOT NULL,
@@ -270,9 +448,10 @@ final class Schema {
  KEY status (status),
  KEY created_at (created_at)
 ){$collation};",
-			'dry_runs'          => "CREATE TABLE {$prefix}ideaxperts_ea_dry_runs (
+			'dry_runs'                      => "CREATE TABLE {$prefix}ideaxperts_ea_dry_runs (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  status varchar(32) NOT NULL DEFAULT 'pending',
+ source_scope varchar(191) NOT NULL DEFAULT 'endless-aisles:qa',
  environment varchar(16) NOT NULL DEFAULT 'qa',
  started_by bigint(20) unsigned NOT NULL,
  started_at datetime NOT NULL,
@@ -296,9 +475,11 @@ final class Schema {
  KEY started_at (started_at),
  KEY status_completed_at (status,completed_at)
 ){$collation};",
-			'dry_run_items'     => "CREATE TABLE {$prefix}ideaxperts_ea_dry_run_items (
+			'dry_run_items'                 => "CREATE TABLE {$prefix}ideaxperts_ea_dry_run_items (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  run_id bigint(20) unsigned NOT NULL,
+ source_scope varchar(191) NOT NULL DEFAULT 'endless-aisles:qa',
+ environment varchar(16) NOT NULL DEFAULT 'qa',
  ea_product_id varchar(191) NOT NULL,
  ea_option_id varchar(191) NOT NULL,
  original_upc varchar(64) NOT NULL DEFAULT '',
@@ -321,9 +502,10 @@ final class Schema {
  UNIQUE KEY run_option (run_id,ea_product_id,ea_option_id),
  KEY run_classification (run_id,classification),
  KEY normalized_upc (normalized_upc),
- KEY wc_identity (wc_product_id,wc_variation_id)
+ KEY wc_identity (wc_product_id,wc_variation_id),
+ KEY run_source (run_id,source_scope)
 ){$collation};",
-			'store_identifiers' => "CREATE TABLE {$prefix}ideaxperts_ea_store_identifiers (
+			'store_identifiers'             => "CREATE TABLE {$prefix}ideaxperts_ea_store_identifiers (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  run_id bigint(20) unsigned NOT NULL,
  wc_product_id bigint(20) unsigned NOT NULL,
@@ -344,9 +526,11 @@ final class Schema {
  KEY run_normalized (run_id,normalized_identifier),
  KEY run_mapping (run_id,ea_product_id,ea_option_id)
 ){$collation};",
-			'dry_run_actions'   => "CREATE TABLE {$prefix}ideaxperts_ea_dry_run_actions (
+			'dry_run_actions'               => "CREATE TABLE {$prefix}ideaxperts_ea_dry_run_actions (
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  run_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ source_scope varchar(191) NOT NULL DEFAULT 'local',
+ environment varchar(16) NOT NULL DEFAULT 'local',
  claim_token varchar(64) NOT NULL DEFAULT '',
  claim_generation bigint(20) unsigned NOT NULL DEFAULT 0,
  intent_token varchar(64) NOT NULL,
@@ -373,6 +557,201 @@ final class Schema {
  KEY scheduler_id (action_scheduler_id),
  KEY run_claim (run_id,claim_generation,status),
  KEY dispatch_lease (status,dispatch_lease_expires_at,id)
+){$collation};",
+			'import_runs'                   => "CREATE TABLE {$prefix}ideaxperts_ea_import_runs (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ dry_run_id bigint(20) unsigned NOT NULL,
+ source_scope varchar(191) NOT NULL,
+ environment varchar(16) NOT NULL,
+ status varchar(32) NOT NULL DEFAULT 'preparing',
+ approval_generation bigint(20) unsigned NOT NULL,
+ approved_by bigint(20) unsigned NOT NULL,
+ approved_at datetime NOT NULL,
+ approval_manifest mediumtext NOT NULL,
+ manifest_hash char(64) NOT NULL,
+ matching_settings_hash char(64) NOT NULL,
+ policy_version varchar(32) NOT NULL,
+ claim_token varchar(64) NOT NULL,
+ claim_generation bigint(20) unsigned NOT NULL DEFAULT 1,
+ cancellation_requested_at datetime NULL,
+ cancellation_authoritative_at datetime NULL,
+ item_count bigint(20) unsigned NOT NULL DEFAULT 0,
+ applied_count bigint(20) unsigned NOT NULL DEFAULT 0,
+ issue_count bigint(20) unsigned NOT NULL DEFAULT 0,
+ last_heartbeat_at datetime NULL,
+ failure_summary varchar(1000) NOT NULL DEFAULT '',
+ created_at datetime NOT NULL,
+ updated_at datetime NOT NULL,
+ completed_at datetime NULL,
+ PRIMARY KEY  (id),
+ UNIQUE KEY dry_run_generation (dry_run_id,approval_generation),
+ KEY status_updated (status,updated_at),
+ KEY source_status (source_scope,status)
+){$collation};",
+			'import_items'                  => "CREATE TABLE {$prefix}ideaxperts_ea_import_items (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ import_run_id bigint(20) unsigned NOT NULL,
+ dry_run_item_id bigint(20) unsigned NOT NULL,
+ entity_kind varchar(24) NOT NULL,
+ approved_action varchar(24) NOT NULL,
+ group_key char(64) NOT NULL,
+ ea_product_id varchar(191) NOT NULL,
+ ea_option_id varchar(191) NOT NULL DEFAULT '',
+ vendor_sku varchar(191) NOT NULL DEFAULT '',
+ normalized_upc varchar(64) NOT NULL DEFAULT '',
+ expected_vendor_hash char(64) NOT NULL,
+ expected_local_hash char(64) NOT NULL,
+ expected_mapping_hash char(64) NOT NULL,
+ expected_live_hash char(64) NOT NULL,
+ target_wc_product_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ target_wc_variation_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ source_scope varchar(191) NOT NULL,
+ environment varchar(16) NOT NULL,
+ approval_generation bigint(20) unsigned NOT NULL,
+ status varchar(32) NOT NULL DEFAULT 'pending',
+ freshness_status varchar(24) NOT NULL DEFAULT 'unvalidated',
+ live_freshness_hash char(64) NOT NULL DEFAULT '',
+ live_freshness_token varchar(64) NOT NULL DEFAULT '',
+ live_freshness_at datetime NULL,
+ attempt_count int(10) unsigned NOT NULL DEFAULT 0,
+ retry_at datetime NULL,
+ failure_code varchar(64) NOT NULL DEFAULT '',
+ execution_token varchar(64) NOT NULL DEFAULT '',
+ lease_expires_at datetime NULL,
+ operation_uuid varchar(64) NOT NULL,
+ apply_started_at datetime NULL,
+ reconciliation_required tinyint(1) NOT NULL DEFAULT 0,
+ approved_by bigint(20) unsigned NOT NULL,
+ approved_at datetime NOT NULL,
+ created_at datetime NOT NULL,
+ updated_at datetime NOT NULL,
+ PRIMARY KEY  (id),
+ UNIQUE KEY run_entity (import_run_id,entity_kind,ea_product_id,ea_option_id),
+ UNIQUE KEY run_dry_item (import_run_id,dry_run_item_id),
+ UNIQUE KEY operation_uuid (operation_uuid),
+ KEY status_retry (status,retry_at,id),
+ KEY lease (status,lease_expires_at,id),
+ KEY group_status (import_run_id,group_key,status)
+){$collation};",
+			'catalog_identities'            => "CREATE TABLE {$prefix}ideaxperts_ea_catalog_identities (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ identity_key char(64) NOT NULL,
+ source_scope varchar(191) NOT NULL,
+ environment varchar(16) NOT NULL,
+ entity_kind varchar(24) NOT NULL,
+ ea_product_id varchar(191) NOT NULL,
+ ea_option_id varchar(191) NOT NULL DEFAULT '',
+ owning_import_item_id bigint(20) unsigned NOT NULL,
+ reservation_status varchar(24) NOT NULL DEFAULT 'reserved',
+ operation_uuid varchar(64) NOT NULL,
+ wc_identity_key char(64) NULL,
+ wc_product_id bigint(20) unsigned NULL,
+ wc_variation_id bigint(20) unsigned NULL,
+ ownership_mode varchar(24) NOT NULL,
+ vendor_state_hash char(64) NOT NULL DEFAULT '',
+ owner_token varchar(64) NOT NULL,
+ created_at datetime NOT NULL,
+ updated_at datetime NOT NULL,
+ PRIMARY KEY  (id),
+ UNIQUE KEY identity_key (identity_key),
+ UNIQUE KEY vendor_identity (source_scope,entity_kind,ea_product_id,ea_option_id),
+ UNIQUE KEY operation_uuid (operation_uuid),
+ UNIQUE KEY wc_identity_key (wc_identity_key),
+ KEY owner_status (owning_import_item_id,reservation_status)
+){$collation};",
+			'store_identifier_reservations' => "CREATE TABLE {$prefix}ideaxperts_ea_store_identifier_reservations (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ namespace varchar(32) NOT NULL,
+ identifier_type varchar(24) NOT NULL,
+ normalized_identifier varchar(191) NOT NULL,
+ identifier_key char(64) NOT NULL,
+ catalog_identity_id bigint(20) unsigned NOT NULL,
+ owning_import_item_id bigint(20) unsigned NOT NULL,
+ source_scope varchar(191) NOT NULL,
+ environment varchar(16) NOT NULL,
+ reservation_status varchar(24) NOT NULL DEFAULT 'reserved',
+ owner_token varchar(64) NOT NULL,
+ created_at datetime NOT NULL,
+ updated_at datetime NOT NULL,
+ PRIMARY KEY  (id),
+ UNIQUE KEY identifier_key (identifier_key),
+ UNIQUE KEY store_identifier (namespace,identifier_type,normalized_identifier),
+ KEY identity_status (catalog_identity_id,reservation_status)
+){$collation};",
+			'import_actions'                => "CREATE TABLE {$prefix}ideaxperts_ea_import_actions (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ import_run_id bigint(20) unsigned NOT NULL,
+ import_item_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ source_scope varchar(191) NOT NULL,
+ environment varchar(16) NOT NULL,
+ claim_generation bigint(20) unsigned NOT NULL,
+ action_type varchar(32) NOT NULL,
+ logical_key char(64) NOT NULL,
+ hook varchar(191) NOT NULL,
+ status varchar(32) NOT NULL DEFAULT 'pending',
+ available_at datetime NOT NULL,
+ attempts int(10) unsigned NOT NULL DEFAULT 0,
+ action_scheduler_id bigint(20) unsigned NULL,
+ dispatch_generation bigint(20) unsigned NOT NULL DEFAULT 0,
+ dispatch_token varchar(64) NOT NULL DEFAULT '',
+ dispatch_started_at datetime NULL,
+ dispatch_lease_expires_at datetime NULL,
+ dispatched_at datetime NULL,
+ execution_token varchar(64) NOT NULL DEFAULT '',
+ started_at datetime NULL,
+ lease_expires_at datetime NULL,
+ failure_code varchar(64) NOT NULL DEFAULT '',
+ created_at datetime NOT NULL,
+ updated_at datetime NOT NULL,
+ PRIMARY KEY  (id),
+ UNIQUE KEY logical_action (logical_key),
+ KEY status_available (status,available_at,id),
+ KEY dispatch_lease (status,dispatch_lease_expires_at,id),
+ KEY dispatched_lease (status,dispatched_at,id),
+ KEY execution_lease (status,lease_expires_at,id),
+ KEY run_status (import_run_id,status),
+ KEY scheduler_id (action_scheduler_id)
+){$collation};",
+			'import_events'                 => "CREATE TABLE {$prefix}ideaxperts_ea_import_events (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ import_run_id bigint(20) unsigned NOT NULL,
+ import_item_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ dry_run_id bigint(20) unsigned NOT NULL,
+ ea_product_id varchar(191) NOT NULL DEFAULT '',
+ ea_option_id varchar(191) NOT NULL DEFAULT '',
+ wc_product_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ wc_variation_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ event_type varchar(48) NOT NULL,
+ actor_id bigint(20) unsigned NOT NULL DEFAULT 0,
+ before_hash char(64) NOT NULL DEFAULT '',
+ after_hash char(64) NOT NULL DEFAULT '',
+ operation_uuid varchar(64) NOT NULL DEFAULT '',
+ ownership_token_hash char(64) NOT NULL DEFAULT '',
+ attempt int(10) unsigned NOT NULL DEFAULT 0,
+ failure_code varchar(64) NOT NULL DEFAULT '',
+ event_data varchar(4000) NOT NULL DEFAULT '',
+ created_at datetime NOT NULL,
+ PRIMARY KEY  (id),
+ KEY run_created (import_run_id,created_at,id),
+ KEY item_created (import_item_id,created_at,id),
+ KEY event_type (event_type)
+){$collation};",
+			'vendor_snapshots'              => "CREATE TABLE {$prefix}ideaxperts_ea_vendor_snapshots (
+ id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+ source_scope varchar(191) NOT NULL,
+ environment varchar(16) NOT NULL,
+ identity_key char(64) NOT NULL,
+ ea_product_id varchar(191) NOT NULL,
+ ea_option_id varchar(191) NOT NULL DEFAULT '',
+ payload mediumtext NOT NULL,
+ payload_hash char(64) NOT NULL,
+ normalization_version varchar(32) NOT NULL,
+ api_contract_version varchar(32) NOT NULL DEFAULT '',
+ fetched_at datetime NOT NULL,
+ created_at datetime NOT NULL,
+ PRIMARY KEY  (id),
+ UNIQUE KEY source_identity_hash (source_scope,identity_key,payload_hash),
+ KEY identity_fetched (identity_key,fetched_at)
 ){$collation};",
 		);
 	}

@@ -9,6 +9,7 @@ namespace IdeaXperts\EndlessAisles;
 
 use IdeaXperts\EndlessAisles\Admin\Admin;
 use IdeaXperts\EndlessAisles\Admin\CatalogDryRunAdmin;
+use IdeaXperts\EndlessAisles\Admin\CatalogImportAdmin;
 use IdeaXperts\EndlessAisles\API\CatalogService;
 use IdeaXperts\EndlessAisles\API\BaseUrlResolver;
 use IdeaXperts\EndlessAisles\API\ConnectionTester;
@@ -18,11 +19,16 @@ use IdeaXperts\EndlessAisles\Core\Dependencies;
 use IdeaXperts\EndlessAisles\Database\Migrator;
 use IdeaXperts\EndlessAisles\Database\DryRunRepository;
 use IdeaXperts\EndlessAisles\Database\SyncRunRepository;
+use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
 use IdeaXperts\EndlessAisles\Catalog\DryRunManager;
 use IdeaXperts\EndlessAisles\Catalog\MatchClassifier;
 use IdeaXperts\EndlessAisles\Catalog\StoreCatalogScanner;
+use IdeaXperts\EndlessAisles\Import\ApprovalManifest;
+use IdeaXperts\EndlessAisles\Import\ImportManager;
+use IdeaXperts\EndlessAisles\Import\ImportPolicy;
+use IdeaXperts\EndlessAisles\Import\LiveCatalogStateProvider;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 
 defined( 'ABSPATH' ) || exit;
@@ -52,6 +58,7 @@ final class Plugin {
 		$this->container->get( Admin::class )->register();
 		$this->container->get( InventoryScheduler::class )->register();
 		$this->container->get( DryRunManager::class )->register();
+		$this->container->get( ImportManager::class )->register();
 	}
 
 	public function load_textdomain(): void {
@@ -63,6 +70,11 @@ final class Plugin {
 		$this->container->set( DatabaseLogger::class, static fn() => new DatabaseLogger() );
 		$this->container->set( SyncRunRepository::class, static fn() => new SyncRunRepository() );
 		$this->container->set( DryRunRepository::class, static fn() => new DryRunRepository() );
+		$this->container->set( LiveCatalogStateProvider::class, fn() => new LiveCatalogStateProvider( $this->container->get( SettingsRepository::class ) ) );
+		$this->container->set( ImportRepository::class, fn() => new ImportRepository( $this->container->get( LiveCatalogStateProvider::class ) ) );
+		$this->container->set( ImportPolicy::class, static fn() => new ImportPolicy() );
+		$this->container->set( ApprovalManifest::class, fn() => new ApprovalManifest( $this->container->get( ImportPolicy::class ), $this->container->get( LiveCatalogStateProvider::class ) ) );
+		$this->container->set( ImportManager::class, fn() => new ImportManager( $this->container->get( ImportRepository::class ) ) );
 		$this->container->set( MatchClassifier::class, static fn() => new MatchClassifier() );
 		$this->container->set( BaseUrlResolver::class, static fn() => new BaseUrlResolver() );
 		$this->container->set( EndpointRegistry::class, static fn() => new EndpointRegistry() );
@@ -116,13 +128,24 @@ final class Plugin {
 			)
 		);
 		$this->container->set(
+			CatalogImportAdmin::class,
+			fn() => new CatalogImportAdmin(
+				$this->container->get( DryRunRepository::class ),
+				$this->container->get( ImportRepository::class ),
+				$this->container->get( ApprovalManifest::class ),
+				$this->container->get( ImportManager::class ),
+				$this->container->get( ImportPolicy::class )
+			)
+		);
+		$this->container->set(
 			Admin::class,
 			fn() => new Admin(
 				$this->container->get( SettingsRepository::class ),
 				$this->container->get( DatabaseLogger::class ),
 				$this->container->get( InventoryScheduler::class ),
 				$this->container->get( ConnectionTester::class ),
-				$this->container->get( CatalogDryRunAdmin::class )
+				$this->container->get( CatalogDryRunAdmin::class ),
+				$this->container->get( CatalogImportAdmin::class )
 			)
 		);
 	}

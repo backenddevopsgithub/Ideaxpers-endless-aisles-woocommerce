@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added schema 3.0.0 and Milestone 3A's immutable approval manifests, deterministic import policy, source/environment isolation, and server-side eligibility derivation.
+- Added durable import runs/items, vendor snapshots, catalog identity and UPC reservations, audit events, and an Action Scheduler outbox with exact-argument reconciliation.
+- Added final-write permit, applying/reconciling/manual-recovery, cancellation-fence, lease, and token-ownership infrastructure while deliberately leaving all WooCommerce product writes disabled.
+- Added a minimal nonce- and capability-protected import preparation/confirmation/cancellation screen and import-foundation test coverage.
+- Added authoritative read-only WooCommerce/mapping freshness fingerprints, context-bound final-permit evidence, resumable action provisioning, dispatch-generation fencing, and lost-scheduler-action recovery.
+- Added an explicit fail-closed 2.3.0-to-3.0.0 populated-data migration and unambiguous canonical JSON vendor identity hashing.
 - Added schema 2.3.0 with a durable InnoDB dry-run scheduling outbox and immutable claim generations.
 - Separated plugin transactions from replaceable Action Scheduler storage, with exact-argument adoption and bounded reconciliation after ambiguous dispatches.
 - Added durable `cancelling` and `recovering` lifecycles, verified bounded unscheduling, stale-claim isolation, and generation-bound administrator cancellation.

@@ -314,6 +314,8 @@ final class DryRunManager {
 		$items      = array();
 		$duplicates = array();
 		$seen       = array();
+		$run        = $this->runs->run( $run_id );
+		$scope      = is_array( $run ) ? (string) ( $run['source_scope'] ?? 'endless-aisles:qa' ) : 'endless-aisles:qa';
 		foreach ( $products as $product ) {
 			foreach ( $product['sizes'] as $option ) {
 				$option['ea_product_id'] = (string) ( $product['id'] ?? '' );
@@ -329,8 +331,8 @@ final class DryRunManager {
 				$upc_matches                = $this->runs->identifier_matches( $run_id, $upc['normalized'], 'upc' );
 				$sku_matches                = $this->runs->identifier_matches( $run_id, $upc['normalized'], 'sku' );
 				$identity                   = 1 === count( $upc_matches ) ? $upc_matches[0] : ( 1 === count( $sku_matches ) ? $sku_matches[0] : null );
-				$mapping                    = $identity ? $this->runs->mapping_for_store_item( (int) $identity['wc_product_id'], (int) $identity['wc_variation_id'] ) : null;
-				$match                      = $this->classifier->classify( $option, $this->runs->mappings( $product_id, $option_id ), $upc_matches, $sku_matches, 'yes' === $this->settings->get( 'allow_sku_upc_match', 'no' ), $duplicate, $mapping );
+				$mapping                    = $identity ? $this->runs->mapping_for_store_item( (int) $identity['wc_product_id'], (int) $identity['wc_variation_id'], $scope ) : null;
+				$match                      = $this->classifier->classify( $option, $this->runs->mappings( $product_id, $option_id, $scope ), $upc_matches, $sku_matches, 'yes' === $this->settings->get( 'allow_sku_upc_match', 'no' ), $duplicate, $mapping );
 				$items[]                    = array(
 					'ea_product_id'             => $product_id,
 					'ea_option_id'              => $option_id,

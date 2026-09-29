@@ -26,6 +26,7 @@ final class DryRunRepositoryTest extends TestCase {
 		$this->wpdb->insert(
 			'wp_ideaxperts_ea_mappings',
 			array(
+				'source_scope'    => 'endless-aisles:qa',
 				'ea_product_id'   => '10',
 				'ea_option_id'    => '20',
 				'mapping_status'  => 'active',
@@ -36,6 +37,7 @@ final class DryRunRepositoryTest extends TestCase {
 		$this->wpdb->insert(
 			'wp_ideaxperts_ea_mappings',
 			array(
+				'source_scope'    => 'endless-aisles:qa',
 				'ea_product_id'   => '10',
 				'ea_option_id'    => '21',
 				'mapping_status'  => 'active',
@@ -49,6 +51,23 @@ final class DryRunRepositoryTest extends TestCase {
 		self::assertCount( 1, $matches );
 		self::assertSame( '21', $matches[0]['ea_option_id'] );
 		self::assertSame( array(), $this->runs->mappings( '10', '99' ) );
+	}
+
+	public function test_mapping_lookup_never_adopts_a_different_environment(): void {
+		$this->wpdb->insert(
+			'wp_ideaxperts_ea_mappings',
+			array(
+				'source_scope'    => 'endless-aisles:production',
+				'ea_product_id'   => '10',
+				'ea_option_id'    => '20',
+				'mapping_status'  => 'active',
+				'wc_product_id'   => 1,
+				'wc_variation_id' => 0,
+			)
+		);
+
+		self::assertSame( array(), $this->runs->mappings( '10', '20', 'endless-aisles:qa' ) );
+		self::assertCount( 1, $this->runs->mappings( '10', '20', 'endless-aisles:production' ) );
 	}
 
 	public function test_vendor_duplicate_flags_do_not_change_classification(): void {

@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       IdeaXperts Endless Aisles for WooCommerce
  * Description:       Secure integration foundation for Small Town Pets Endless Aisles.
- * Version:           0.2.0
+ * Version:           0.3.0
  * Requires at least: 6.4
  * Requires PHP:      8.1
  * Requires Plugins:  woocommerce
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'IDEAXPERTS_EA_VERSION', '0.2.0' );
+define( 'IDEAXPERTS_EA_VERSION', '0.3.0' );
 define( 'IDEAXPERTS_EA_FILE', __FILE__ );
 define( 'IDEAXPERTS_EA_PATH', plugin_dir_path( __FILE__ ) );
 

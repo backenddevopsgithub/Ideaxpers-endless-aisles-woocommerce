@@ -25,6 +25,11 @@ final class Migrator {
 
 	public function migrate(): bool {
 		global $wpdb;
+		$previous = (string) get_option( self::VERSION_OPTION, '' );
+		if ( '' !== $previous && version_compare( $previous, '3.0.0', '<' ) && ! $this->prepare_three_upgrade() ) {
+			delete_option( self::INTEGRITY_OPTION );
+			return false;
+		}
 		if ( null === $this->db_delta ) {
 			require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		}
@@ -52,6 +57,78 @@ final class Migrator {
 		update_option( self::VERSION_OPTION, Schema::VERSION, false );
 		update_option( self::INTEGRITY_OPTION, Schema::VERSION, false );
 		return true;
+	}
+
+	/**
+	 * Milestone 2 catalog reads were QA-only. Explicitly normalize its populated
+	 * rows before dbDelta sees the changed mapping index. DDL may auto-commit, so
+	 * every step is idempotent and version advancement remains fail-closed.
+	 */
+	private function prepare_three_upgrade(): bool {
+		global $wpdb;
+		$prefix   = $wpdb->prefix;
+		$mappings = $prefix . 'ideaxperts_ea_mappings';
+		$columns  = array(
+			array( $mappings, 'source_scope', "varchar(191) NOT NULL DEFAULT 'legacy'" ),
+			array( $mappings, 'environment', "varchar(16) NOT NULL DEFAULT 'qa'" ),
+			array( $prefix . 'ideaxperts_ea_dry_runs', 'source_scope', "varchar(191) NOT NULL DEFAULT 'endless-aisles:qa'" ),
+			array( $prefix . 'ideaxperts_ea_dry_run_items', 'source_scope', "varchar(191) NOT NULL DEFAULT 'endless-aisles:qa'" ),
+			array( $prefix . 'ideaxperts_ea_dry_run_items', 'environment', "varchar(16) NOT NULL DEFAULT 'qa'" ),
+			array( $prefix . 'ideaxperts_ea_dry_run_actions', 'source_scope', "varchar(191) NOT NULL DEFAULT 'local'" ),
+			array( $prefix . 'ideaxperts_ea_dry_run_actions', 'environment', "varchar(16) NOT NULL DEFAULT 'local'" ),
+		);
+		foreach ( $columns as $column_definition ) {
+			list( $table, $column, $definition ) = $column_definition;
+			if ( ! $this->column_exists( $table, $column ) && false === $wpdb->query( "ALTER TABLE {$table} ADD COLUMN {$column} {$definition}" ) ) { // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal schema identifiers and fixed definitions.
+				return false;
+			}
+		}
+		$queries = array(
+			"UPDATE {$mappings} SET source_scope = 'endless-aisles:qa', environment = 'qa' WHERE source_scope IS NULL OR source_scope IN ('','legacy')",
+			"UPDATE {$prefix}ideaxperts_ea_dry_runs SET source_scope = CASE WHEN environment = 'local' THEN 'local' ELSE 'endless-aisles:qa' END, environment = CASE WHEN environment = 'local' THEN 'local' ELSE 'qa' END WHERE source_scope IS NULL OR source_scope IN ('','legacy','endless-aisles:qa')",
+			"UPDATE {$prefix}ideaxperts_ea_dry_run_items i INNER JOIN {$prefix}ideaxperts_ea_dry_runs r ON r.id = i.run_id SET i.source_scope = r.source_scope, i.environment = r.environment WHERE i.source_scope <> r.source_scope OR i.environment <> r.environment OR i.source_scope IS NULL OR i.environment IS NULL",
+			"UPDATE {$prefix}ideaxperts_ea_dry_run_actions a INNER JOIN {$prefix}ideaxperts_ea_dry_runs r ON r.id = a.run_id SET a.source_scope = r.source_scope, a.environment = r.environment WHERE a.run_id > 0 AND (a.source_scope <> r.source_scope OR a.environment <> r.environment OR a.source_scope IS NULL OR a.environment IS NULL)",
+			"UPDATE {$prefix}ideaxperts_ea_dry_run_actions SET source_scope = 'local', environment = 'local' WHERE run_id = 0 AND (source_scope <> 'local' OR environment <> 'local' OR source_scope IS NULL OR environment IS NULL)",
+		);
+		foreach ( $queries as $query ) {
+			if ( false === $wpdb->query( $query ) ) { // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Fixed migration SQL.
+				return false;
+			}
+		}
+		$duplicates = (int) $wpdb->get_var( "SELECT COUNT(*) FROM (SELECT source_scope,ea_product_id,ea_option_id FROM {$mappings} GROUP BY source_scope,ea_product_id,ea_option_id HAVING COUNT(*) > 1) duplicate_mappings" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( $duplicates > 0 || '' !== $this->database_error() ) {
+			return false;
+		}
+		$index = $this->index_columns( $mappings, 'ea_identity' );
+		$want  = array( 'source_scope', 'ea_product_id', 'ea_option_id' );
+		if ( $index !== $want ) {
+			if ( array() !== $index && false === $wpdb->query( "ALTER TABLE {$mappings} DROP INDEX ea_identity" ) ) { // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return false;
+			}
+			if ( false === $wpdb->query( "ALTER TABLE {$mappings} ADD UNIQUE KEY ea_identity (source_scope,ea_product_id,ea_option_id)" ) ) { // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return false;
+			}
+		}
+		$invalid = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$mappings} WHERE NOT ((source_scope = 'endless-aisles:qa' AND environment = 'qa') OR (source_scope = 'endless-aisles:production' AND environment = 'production')) OR source_scope IS NULL OR environment IS NULL" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return 0 === $invalid && '' === $this->database_error();
+	}
+
+	private function column_exists( string $table, string $column ): bool {
+		global $wpdb;
+		$this->clear_database_error();
+		$found = $wpdb->get_var( $wpdb->prepare( 'SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s', $table, $column ) );
+		return $column === (string) $found && '' === $this->database_error();
+	}
+
+	/** @return list<string> */
+	private function index_columns( string $table, string $index ): array {
+		global $wpdb;
+		$this->clear_database_error();
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s ORDER BY SEQ_IN_INDEX', $table, $index ), ARRAY_A );
+		if ( ! is_array( $rows ) || '' !== $this->database_error() ) {
+			return array();
+		}
+		return array_values( array_map( static fn( array $row ): string => (string) $row['COLUMN_NAME'], $rows ) );
 	}
 
 	private function verify_integrity(): bool {

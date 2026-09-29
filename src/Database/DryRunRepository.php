@@ -176,12 +176,14 @@ final class DryRunRepository {
 			return 0;
 		}
 		global $wpdb;
-		$now = current_time( 'mysql', true );
-		$ok  = $wpdb->insert(
+		$environment = in_array( $environment, array( 'qa', 'production', 'local' ), true ) ? $environment : 'qa';
+		$now         = current_time( 'mysql', true );
+		$ok          = $wpdb->insert(
 			$wpdb->prefix . 'ideaxperts_ea_dry_runs',
 			array(
 				'status'                  => 'pending',
-				'environment'             => 'local' === $environment ? 'local' : 'qa',
+				'source_scope'            => 'local' === $environment ? 'local' : 'endless-aisles:' . $environment,
+				'environment'             => $environment,
 				'started_by'              => $user_id,
 				'started_at'              => $now,
 				'updated_at'              => $now,
@@ -195,7 +197,7 @@ final class DryRunRepository {
 				'claim_token'             => $claim_token,
 				'claim_generation'        => 1,
 			),
-			array( '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%d' )
+			array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%d' )
 		);
 		return false === $ok ? 0 : (int) $wpdb->insert_id;
 	}
@@ -549,11 +551,11 @@ final class DryRunRepository {
 	}
 
 	/** @return list<array<string,mixed>> */
-	public function mappings( string $product_id, string $option_id ): array {
+	public function mappings( string $product_id, string $option_id, string $source_scope = 'endless-aisles:qa' ): array {
 		global $wpdb;
 		$this->clear_database_error();
 		$table = $wpdb->prefix . 'ideaxperts_ea_mappings';
-		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE mapping_status = %s AND ea_product_id = %s AND ea_option_id = %s", 'active', $product_id, $option_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE mapping_status = %s AND source_scope = %s AND ea_product_id = %s AND ea_option_id = %s", 'active', $source_scope, $product_id, $option_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( ! is_array( $rows ) || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
 			throw new \RuntimeException( 'Catalog dry-run database read failed.' );
 		}
@@ -561,11 +563,11 @@ final class DryRunRepository {
 	}
 
 	/** @return array<string,mixed>|null */
-	public function mapping_for_store_item( int $wc_product_id, int $wc_variation_id ): ?array {
+	public function mapping_for_store_item( int $wc_product_id, int $wc_variation_id, string $source_scope = 'endless-aisles:qa' ): ?array {
 		global $wpdb;
 		$this->clear_database_error();
 		$table = $wpdb->prefix . 'ideaxperts_ea_mappings';
-		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE mapping_status = %s AND wc_product_id = %d AND wc_variation_id = %d", 'active', $wc_product_id, $wc_variation_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE mapping_status = %s AND source_scope = %s AND wc_product_id = %d AND wc_variation_id = %d", 'active', $source_scope, $wc_product_id, $wc_variation_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( '' !== (string) ( $wpdb->last_error ?? '' ) ) {
 			throw new \RuntimeException( 'Catalog dry-run database read failed.' );
 		}
@@ -574,9 +576,12 @@ final class DryRunRepository {
 
 	/** @param array<string,mixed> $item */
 	public function item( int $run_id, array $item, string $claim_token = '' ): bool {
-		$data = array_merge(
+		$source = $this->source_fields( $run_id );
+		$data   = array_merge(
 			array(
 				'run_id'                    => $run_id,
+				'source_scope'              => $source['source_scope'],
+				'environment'               => $source['environment'],
 				'ea_product_id'             => '',
 				'ea_option_id'              => '',
 				'original_upc'              => '',
@@ -751,9 +756,12 @@ final class DryRunRepository {
 	 * @return array<string,mixed>
 	 */
 	private function item_data( int $run_id, array $item ): array {
+		$source               = $this->source_fields( $run_id );
 		$data                 = array_merge(
 			array(
 				'run_id'                    => $run_id,
+				'source_scope'              => $source['source_scope'],
+				'environment'               => $source['environment'],
 				'ea_product_id'             => '',
 				'ea_option_id'              => '',
 				'original_upc'              => '',
@@ -777,6 +785,19 @@ final class DryRunRepository {
 		);
 		$data['review_flags'] = wp_json_encode( MatchClassifier::sanitize_flags( is_array( $data['review_flags'] ) ? $data['review_flags'] : json_decode( (string) $data['review_flags'], true ) ) );
 		return $data;
+	}
+
+	/** @return array{source_scope:string,environment:string} */
+	private function source_fields( int $run_id ): array {
+		$run         = $this->run( $run_id );
+		$environment = is_array( $run ) ? (string) ( $run['environment'] ?? 'qa' ) : 'qa';
+		$environment = in_array( $environment, array( 'qa', 'production', 'local' ), true ) ? $environment : 'qa';
+		$scope       = is_array( $run ) ? (string) ( $run['source_scope'] ?? '' ) : '';
+
+		return array(
+			'source_scope' => '' !== $scope ? $scope : ( 'local' === $environment ? 'local' : 'endless-aisles:' . $environment ),
+			'environment'  => $environment,
+		);
 	}
 
 	public function vendor_upc_used_by_other_option( int $run_id, string $normalized_upc, string $product_id, string $option_id ): ?bool {
@@ -891,13 +912,19 @@ final class DryRunRepository {
 
 	private function insert_action_intent( int $run_id, string $claim_token, int $claim_generation, string $action_type, string $hook, int $page_number ): int {
 		global $wpdb;
-		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
-		$now   = current_time( 'mysql', true );
-		$token = $this->new_lock_token();
-		$ok    = $wpdb->insert(
+		$source = 0 === $run_id ? array(
+			'source_scope' => 'local',
+			'environment'  => 'local',
+		) : $this->source_fields( $run_id );
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+		$now    = current_time( 'mysql', true );
+		$token  = $this->new_lock_token();
+		$ok     = $wpdb->insert(
 			$table,
 			array(
 				'run_id'                    => $run_id,
+				'source_scope'              => $source['source_scope'],
+				'environment'               => $source['environment'],
 				'claim_token'               => $claim_token,
 				'claim_generation'          => $claim_generation,
 				'intent_token'              => $token,
@@ -1404,6 +1431,22 @@ final class DryRunRepository {
 		$offset   = ( max( 1, $page ) - 1 ) * $per_page;
 		array_push( $args, $per_page, $offset );
 		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE {$where} ORDER BY id ASC LIMIT %d OFFSET %d", ...$args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * @param list<int> $item_ids Dry-run item IDs.
+	 * @return list<array<string,mixed>>
+	 */
+	public function items_by_ids( int $run_id, array $item_ids ): array {
+		$item_ids = array_values( array_unique( array_filter( array_map( 'absint', $item_ids ) ) ) );
+		if ( array() === $item_ids || count( $item_ids ) > 100000 ) {
+			return array();
+		}
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
+		$slots = implode( ',', array_fill( 0, count( $item_ids ), '%d' ) );
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE run_id = %d AND id IN ({$slots}) ORDER BY id ASC", $run_id, ...$item_ids ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
 		return is_array( $rows ) ? $rows : array();
 	}
 

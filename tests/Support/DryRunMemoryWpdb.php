@@ -10,14 +10,19 @@ final class DryRunMemoryWpdb {
 	/** @var list<string> */
 	public array $queries = array();
 	/** @var array<string,list<array<string,mixed>>>|null */
-	private ?array $transaction_snapshot = null;
-	public string $fail_operation        = '';
-	public string $fail_query_contains   = '';
-	public string $fail_read_contains    = '';
-	public int $fail_read_after          = -1;
-	private int $matching_read_calls     = 0;
-	public int $fail_replace_after       = -1;
-	private int $replace_calls           = 0;
+	private ?array $transaction_snapshot        = null;
+	public string $fail_operation               = '';
+	public string $fail_query_contains          = '';
+	public string $fail_read_contains           = '';
+	public int $fail_read_after                 = -1;
+	private int $matching_read_calls            = 0;
+	public int $fail_replace_after              = -1;
+	public int $fail_import_action_insert_after = -1;
+	private int $import_action_insert_calls     = 0;
+	public int $fail_import_event_insert_after  = -1;
+	public int $import_event_insert_calls       = 0;
+	public string $fail_import_event_type       = '';
+	private int $replace_calls                  = 0;
 	/** @var callable|null */
 	public $after_lock_insert = null;
 	/** @var array<string,list<array<string,mixed>>> */
@@ -25,12 +30,19 @@ final class DryRunMemoryWpdb {
 
 	public function __construct() {
 		$this->tables = array(
-			'wp_ideaxperts_ea_dry_runs'          => array(),
-			'wp_ideaxperts_ea_dry_run_items'     => array(),
-			'wp_ideaxperts_ea_store_identifiers' => array(),
-			'wp_ideaxperts_ea_dry_run_actions'   => array(),
-			'wp_ideaxperts_ea_mappings'          => array(),
-			'wp_options'                         => array(),
+			'wp_ideaxperts_ea_dry_runs'           => array(),
+			'wp_ideaxperts_ea_dry_run_items'      => array(),
+			'wp_ideaxperts_ea_store_identifiers'  => array(),
+			'wp_ideaxperts_ea_dry_run_actions'    => array(),
+			'wp_ideaxperts_ea_mappings'           => array(),
+			'wp_ideaxperts_ea_import_runs'        => array(),
+			'wp_ideaxperts_ea_import_items'       => array(),
+			'wp_ideaxperts_ea_catalog_identities' => array(),
+			'wp_ideaxperts_ea_store_identifier_reservations' => array(),
+			'wp_ideaxperts_ea_import_actions'     => array(),
+			'wp_ideaxperts_ea_import_events'      => array(),
+			'wp_ideaxperts_ea_vendor_snapshots'   => array(),
+			'wp_options'                          => array(),
 		);
 	}
 
@@ -39,12 +51,57 @@ final class DryRunMemoryWpdb {
 		if ( 'insert' === $this->fail_operation ) {
 			return false;
 		}
+		if ( str_contains( $table, 'import_actions' ) ) {
+			++$this->import_action_insert_calls;
+			if ( $this->fail_import_action_insert_after >= 0 && $this->import_action_insert_calls > $this->fail_import_action_insert_after ) {
+				return false;
+			}
+		}
+		if ( str_contains( $table, 'import_events' ) ) {
+			++$this->import_event_insert_calls;
+			if ( '' !== $this->fail_import_event_type && (string) ( $data['event_type'] ?? '' ) === $this->fail_import_event_type ) {
+				$this->fail_import_event_type = '';
+				return false;
+			}
+			if ( $this->fail_import_event_insert_after >= 0 && $this->import_event_insert_calls > $this->fail_import_event_insert_after ) {
+				return false;
+			}
+		}
 		if ( str_contains( $table, 'dry_run_actions' ) ) {
 			foreach ( $this->tables[ $table ] as $row ) {
 				if ( (int) $row['run_id'] === (int) $data['run_id'] &&
 					(int) $row['claim_generation'] === (int) $data['claim_generation'] &&
 					(string) $row['action_type'] === (string) $data['action_type'] &&
 					(int) $row['page_number'] === (int) $data['page_number'] ) {
+					$this->last_error = 'Duplicate entry';
+					return false;
+				}
+			}
+		}
+		$unique_sets = array();
+		if ( str_contains( $table, 'import_runs' ) ) {
+			$unique_sets = array( array( 'dry_run_id', 'approval_generation' ) );
+		} elseif ( str_contains( $table, 'import_items' ) ) {
+			$unique_sets = array( array( 'import_run_id', 'entity_kind', 'ea_product_id', 'ea_option_id' ), array( 'import_run_id', 'dry_run_item_id' ), array( 'operation_uuid' ) );
+		} elseif ( str_contains( $table, 'catalog_identities' ) ) {
+			$unique_sets = array( array( 'identity_key' ), array( 'source_scope', 'entity_kind', 'ea_product_id', 'ea_option_id' ), array( 'operation_uuid' ) );
+		} elseif ( str_contains( $table, 'store_identifier_reservations' ) ) {
+			$unique_sets = array( array( 'identifier_key' ), array( 'namespace', 'identifier_type', 'normalized_identifier' ) );
+		} elseif ( str_contains( $table, 'import_actions' ) ) {
+			$unique_sets = array( array( 'logical_key' ) );
+		} elseif ( str_contains( $table, 'vendor_snapshots' ) ) {
+			$unique_sets = array( array( 'source_scope', 'identity_key', 'payload_hash' ) );
+		}
+		foreach ( $this->tables[ $table ] ?? array() as $row ) {
+			foreach ( $unique_sets as $keys ) {
+				$same = true;
+				foreach ( $keys as $key ) {
+					if ( (string) ( $row[ $key ] ?? '' ) !== (string) ( $data[ $key ] ?? '' ) ) {
+						$same = false;
+						break;
+					}
+				}
+				if ( $same ) {
 					$this->last_error = 'Duplicate entry';
 					return false;
 				}
@@ -127,8 +184,8 @@ final class DryRunMemoryWpdb {
 		foreach ( $args as $arg ) {
 			$query = preg_replace_callback(
 				'/%[sd]/',
-				static function ( array $match ) use ( $arg ): string {
-					if ( '%d' === $match[0] ) {
+				static function ( array $placeholder ) use ( $arg ): string {
+					if ( '%d' === $placeholder[0] ) {
 						return (string) (int) $arg;
 					}
 					return null === $arg ? 'NULL' : "'" . str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), (string) $arg ) . "'";
@@ -421,7 +478,7 @@ final class DryRunMemoryWpdb {
 					if ( ! isset( $cutoffs[ $status ] ) || $anchor >= $cutoffs[ $status ] ) {
 						return false;
 					}
-					return 'completed' !== $status || (int) $row['id'] !== (int) ( $latest[ (string) ( $row['environment'] ?? 'qa' ) ] ?? 0 );
+					return 'completed' !== $status || (int) ( $latest[ (string) ( $row['environment'] ?? 'qa' ) ] ?? 0 ) !== (int) $row['id'];
 				}
 			)
 		);
@@ -469,8 +526,9 @@ final class DryRunMemoryWpdb {
 
 	/** @return array<string,mixed> */
 	private function parse_set( string $set ): array {
-		$data = array();
-		foreach ( preg_split( '/, (?=\w+ = )/', $set ) ?: array() as $part ) {
+		$data  = array();
+		$parts = preg_split( '/, (?=\w+ = )/', $set );
+		foreach ( false !== $parts ? $parts : array() as $part ) {
 			if ( 1 !== preg_match( '/^(\w+) = (NULL|\'(?:\\\\\'|[^\'])*\'|-?\d+)$/', trim( $part ), $match ) ) {
 				continue;
 			}

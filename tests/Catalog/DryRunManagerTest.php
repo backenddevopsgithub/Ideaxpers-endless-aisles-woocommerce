@@ -182,6 +182,7 @@ final class DryRunManagerTest extends TestCase {
 		$this->wpdb->insert(
 			'wp_ideaxperts_ea_mappings',
 			array(
+				'source_scope'    => 'endless-aisles:qa',
 				'ea_product_id'   => 'product-1',
 				'ea_option_id'    => 'option-1',
 				'mapping_status'  => 'active',

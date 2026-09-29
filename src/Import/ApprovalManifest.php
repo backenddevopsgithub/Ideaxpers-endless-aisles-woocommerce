@@ -1,0 +1,121 @@
+<?php
+namespace IdeaXperts\EndlessAisles\Import;
+
+use RuntimeException;
+
+defined( 'ABSPATH' ) || exit;
+
+final class ApprovalManifest {
+	public const MAX_ITEMS = 100000;
+
+	public function __construct( private readonly ImportPolicy $policy, private readonly ?CatalogStateProviderInterface $catalog_state = null ) {}
+
+	/**
+	 * @param array<string,mixed>       $dry_run
+	 * @param list<array<string,mixed>> $items
+	 * @param array<int,bool>           $manual_resolutions Keys are persisted dry-run item IDs.
+	 * @param array<string,mixed>        $matching_settings
+	 * @return array{manifest:array<string,mixed>,hash:string,matching_settings_hash:string}
+	 */
+	public function build( array $dry_run, array $items, array $manual_resolutions, int $approval_generation, array $matching_settings ): array {
+		$environment = (string) ( $dry_run['environment'] ?? '' );
+		if ( 'completed' !== (string) ( $dry_run['status'] ?? '' ) || ! in_array( $environment, array( 'qa', 'production' ), true ) || $approval_generation < 1 ) {
+			throw new RuntimeException( 'Only a completed, scoped dry run can be approved.' );
+		}
+		if ( count( $items ) > self::MAX_ITEMS ) {
+			throw new RuntimeException( 'The approval selection exceeds the safety limit.' );
+		}
+		$manifest_items = array();
+		foreach ( $items as $item ) {
+			$item_id           = (int) ( $item['id'] ?? 0 );
+			$manual_resolution = isset( $manual_resolutions[ $item_id ] ) && true === $manual_resolutions[ $item_id ];
+			$decision          = $this->policy->evaluate( $item, $manual_resolution );
+			if ( 1 > $item_id || ! $decision['eligible'] ) {
+				throw new RuntimeException( 'The selection contains an item that is not eligible for its requested approval mode.' );
+			}
+			$vendor       = array(
+				'ea_product_id'  => (string) ( $item['ea_product_id'] ?? '' ),
+				'ea_option_id'   => (string) ( $item['ea_option_id'] ?? '' ),
+				'normalized_upc' => (string) ( $item['normalized_upc'] ?? '' ),
+				'classification' => (string) ( $item['classification'] ?? '' ),
+				'review_flags'   => json_decode( (string) ( $item['review_flags'] ?? '[]' ), true ),
+				'retail_price'   => (string) ( $item['retail_price'] ?? '' ),
+				'purchasable'    => (int) ( $item['purchasable'] ?? 0 ),
+				'discontinued'   => (int) ( $item['discontinued'] ?? 0 ),
+			);
+			$local        = array(
+				'wc_product_id'   => (int) ( $item['wc_product_id'] ?? 0 ),
+				'wc_variation_id' => (int) ( $item['wc_variation_id'] ?? 0 ),
+			);
+			$source_scope = 'endless-aisles:' . $environment;
+			if ( ! $this->catalog_state ) {
+				throw new RuntimeException( 'Live catalog state is required for approval.' );
+			}
+			$live_hash        = $this->catalog_state->fingerprint( $item, $source_scope, $environment );
+			$manifest_items[] = array(
+				'dry_run_item_id'       => $item_id,
+				'action'                => $decision['action'],
+				'entity_kind'           => (int) $local['wc_variation_id'] > 0 ? 'variation' : 'option',
+				'group_key'             => hash( 'sha256', $environment . "\0" . $vendor['ea_product_id'] ),
+				'vendor'                => $vendor,
+				'target'                => $local,
+				'expected_vendor_hash'  => self::hash( $vendor ),
+				'expected_local_hash'   => self::hash( $local ),
+				'expected_mapping_hash' => self::hash(
+					array(
+						'product' => $vendor['ea_product_id'],
+						'option'  => $vendor['ea_option_id'],
+						'target'  => $local,
+					)
+				),
+				'expected_live_hash'    => $live_hash,
+			);
+		}
+		usort( $manifest_items, static fn( array $a, array $b ): int => $a['dry_run_item_id'] <=> $b['dry_run_item_id'] );
+		$settings_hash = self::hash( $matching_settings );
+		$manifest      = array(
+			'version'                => 1,
+			'policy_version'         => ImportPolicy::VERSION,
+			'dry_run_id'             => (int) $dry_run['id'],
+			'dry_run_generation'     => (int) ( $dry_run['claim_generation'] ?? 1 ),
+			'environment'            => $environment,
+			'source_scope'           => 'endless-aisles:' . $environment,
+			'approval_generation'    => $approval_generation,
+			'matching_settings_hash' => $settings_hash,
+			'items'                  => $manifest_items,
+		);
+		return array(
+			'manifest'               => $manifest,
+			'hash'                   => self::hash( $manifest ),
+			'matching_settings_hash' => $settings_hash,
+		);
+	}
+
+	/** @param array<string,mixed> $manifest */
+	public function verify( array $manifest, string $hash ): bool {
+		return 64 === strlen( $hash ) && hash_equals( self::hash( $manifest ), $hash );
+	}
+
+	/** @param mixed $value */
+	public static function hash( mixed $value ): string {
+		$canonical = self::canonicalize( $value );
+		$json      = wp_json_encode( $canonical, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		if ( ! is_string( $json ) ) {
+			throw new RuntimeException( 'Approval data could not be canonicalized.' );
+		}
+		return hash( 'sha256', $json );
+	}
+
+	private static function canonicalize( mixed $value ): mixed {
+		if ( ! is_array( $value ) ) {
+			return $value;
+		}
+		if ( ! array_is_list( $value ) ) {
+			ksort( $value, SORT_STRING );
+		}
+		foreach ( $value as $key => $child ) {
+			$value[ $key ] = self::canonicalize( $child );
+		}
+		return $value;
+	}
+}

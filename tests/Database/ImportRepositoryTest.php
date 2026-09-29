@@ -1,0 +1,405 @@
+<?php
+namespace IdeaXperts\EndlessAisles\Tests\Database;
+
+use IdeaXperts\EndlessAisles\Database\ImportRepository;
+use IdeaXperts\EndlessAisles\Import\ApprovalManifest;
+use IdeaXperts\EndlessAisles\Tests\Support\DryRunMemoryWpdb;
+use IdeaXperts\EndlessAisles\Tests\Support\FixedCatalogStateProvider;
+use PHPUnit\Framework\TestCase;
+
+final class ImportRepositoryTest extends TestCase {
+	private DryRunMemoryWpdb $wpdb;
+	private ImportRepository $imports;
+	private FixedCatalogStateProvider $catalog_state;
+
+	protected function setUp(): void {
+		$GLOBALS['ea_now']   = '2026-09-28 12:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
+		$this->wpdb          = new DryRunMemoryWpdb();
+		$GLOBALS['wpdb']     = $this->wpdb;
+		$this->catalog_state = new FixedCatalogStateProvider();
+		$this->imports       = new ImportRepository( $this->catalog_state );
+	}
+
+	public function test_manifest_persistence_is_transactional_and_generation_unique(): void {
+		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		self::assertGreaterThan( 0, $run_id );
+		self::assertSame( ApprovalManifest::hash( $manifest ), $this->imports->run( $run_id )['manifest_hash'] );
+		self::assertSame( 0, $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 ) );
+		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_import_runs'] );
+	}
+
+	public function test_self_hashed_manifest_cannot_promote_a_server_blocked_action(): void {
+		$manifest                       = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$manifest['items'][0]['action'] = 'link';
+
+		self::assertSame( 0, $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 ) );
+		self::assertCount( 0, $this->wpdb->tables['wp_ideaxperts_ea_import_runs'] );
+	}
+
+	public function test_vendor_identity_and_store_upc_have_separate_atomic_uniqueness(): void {
+		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ), $this->manifest_item( 2, 'p2', 'o2', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		self::assertTrue( $this->imports->start_run( $run_id ) );
+		$items           = $this->imports->items( $run_id );
+		$first_token     = $this->imports->claim_item( (int) $items[0]['id'] );
+		$second_token    = $this->imports->claim_item( (int) $items[1]['id'] );
+		$first_identity  = $this->imports->reserve_catalog_identity( (int) $items[0]['id'], $first_token );
+		$second_identity = $this->imports->reserve_catalog_identity( (int) $items[1]['id'], $second_token );
+		self::assertGreaterThan( 0, $first_identity );
+		self::assertGreaterThan( 0, $second_identity );
+		self::assertGreaterThan( 0, $this->imports->reserve_upc( $first_identity, (int) $items[0]['id'], $first_token ) );
+		self::assertSame( 0, $this->imports->reserve_upc( $second_identity, (int) $items[1]['id'], $second_token ) );
+	}
+
+	public function test_competing_runs_cannot_reserve_the_same_scoped_vendor_identity(): void {
+		$first_manifest  = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$second_manifest = $this->manifest( 'production', array( $this->manifest_item( 2, 'p1', 'o1', '009876543210' ) ) );
+		$first_run       = $this->imports->create_from_manifest( $first_manifest, ApprovalManifest::hash( $first_manifest ), 7 );
+		$second_run      = $this->imports->create_from_manifest( $second_manifest, ApprovalManifest::hash( $second_manifest ), 7 );
+		$this->imports->start_run( $first_run );
+		$this->imports->start_run( $second_run );
+		$first_item   = $this->imports->items( $first_run )[0];
+		$second_item  = $this->imports->items( $second_run )[0];
+		$first_token  = $this->imports->claim_item( (int) $first_item['id'] );
+		$second_token = $this->imports->claim_item( (int) $second_item['id'] );
+
+		self::assertGreaterThan( 0, $this->imports->reserve_catalog_identity( (int) $first_item['id'], $first_token ) );
+		self::assertSame( 0, $this->imports->reserve_catalog_identity( (int) $second_item['id'], $second_token ) );
+	}
+
+	public function test_final_permit_rechecks_cancellation_freshness_and_current_owner(): void {
+		$context = $this->ready_item();
+		self::assertTrue( $this->imports->request_cancellation( $context['run_id'] ) );
+		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertSame( 'cancelled', $this->imports->item( $context['item_id'] )['status'] );
+	}
+
+	public function test_tampered_vendor_snapshot_cannot_be_accepted_as_fresh(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item  = $this->imports->items( $run_id )[0];
+		$token = $this->imports->claim_item( (int) $item['id'] );
+		$this->imports->begin_validation( (int) $item['id'], $token );
+		$this->wpdb->tables['wp_ideaxperts_ea_vendor_snapshots'][0]['payload'] = '{"ea_product_id":"tampered"}';
+
+		self::assertFalse( $this->imports->accept_freshness( (int) $item['id'], $token ) );
+		self::assertTrue( $this->imports->reject_stale( (int) $item['id'], $token ) );
+		self::assertSame( 'stale_snapshot', $this->imports->item( (int) $item['id'] )['status'] );
+	}
+
+	public function test_final_permit_rejects_an_expired_lease_even_when_the_old_token_still_matches(): void {
+		$context           = $this->ready_item();
+		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
+
+		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertSame( 'ready', $this->imports->item( $context['item_id'] )['status'] );
+	}
+
+	public function test_applying_is_not_reclaimed_and_blocks_authoritative_cancellation(): void {
+		$context = $this->ready_item();
+		self::assertTrue( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
+		self::assertSame( 0, $this->imports->reclaim_expired_pre_apply() );
+		self::assertTrue( $this->imports->request_cancellation( $context['run_id'] ) );
+		self::assertFalse( $this->imports->finalize_cancellation( $context['run_id'] ) );
+		self::assertTrue( $this->imports->move_applying_to_reconciling( $context['item_id'], $context['token'] ) );
+		self::assertTrue( $this->imports->finish_reconciliation_without_write( $context['item_id'], $context['token'] ) );
+		self::assertTrue( $this->imports->finalize_cancellation( $context['run_id'] ) );
+		self::assertSame( 'cancelled', $this->imports->run( $context['run_id'] )['status'] );
+	}
+
+	public function test_cancellation_fences_a_validating_worker_and_becomes_authoritative(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item  = $this->imports->items( $run_id )[0];
+		$token = $this->imports->claim_item( (int) $item['id'] );
+		self::assertTrue( $this->imports->begin_validation( (int) $item['id'], $token ) );
+
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+		self::assertFalse( $this->imports->accept_freshness( (int) $item['id'], $token ) );
+		self::assertTrue( $this->imports->finalize_cancellation( $run_id ) );
+		self::assertNotNull( $this->imports->run( $run_id )['cancellation_authoritative_at'] );
+		self::assertSame( 'cancelled', $this->imports->item( (int) $item['id'] )['status'] );
+	}
+
+	public function test_expired_pre_apply_lease_is_reclaimed_and_old_token_is_fenced(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item = $this->imports->items( $run_id )[0];
+		$old  = $this->imports->claim_item( (int) $item['id'] );
+		self::assertTrue( $this->imports->begin_validation( (int) $item['id'], $old ) );
+		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
+		self::assertSame( 1, $this->imports->reclaim_expired_pre_apply() );
+		self::assertFalse( $this->imports->accept_freshness( (int) $item['id'], $old ) );
+		self::assertNotSame( '', $this->imports->claim_item( (int) $item['id'] ) );
+	}
+
+	public function test_reclaimed_item_can_reacquire_its_own_durable_reservations_with_a_new_token(): void {
+		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item              = $this->imports->items( $run_id )[0];
+		$old               = $this->imports->claim_item( (int) $item['id'] );
+		$identity_id       = $this->imports->reserve_catalog_identity( (int) $item['id'], $old );
+		$upc_id            = $this->imports->reserve_upc( $identity_id, (int) $item['id'], $old );
+		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
+		self::assertSame( 1, $this->imports->reclaim_expired_pre_apply() );
+		$new = $this->imports->claim_item( (int) $item['id'] );
+
+		self::assertNotSame( $old, $new );
+		self::assertSame( $identity_id, $this->imports->reserve_catalog_identity( (int) $item['id'], $new ) );
+		self::assertSame( $upc_id, $this->imports->reserve_upc( $identity_id, (int) $item['id'], $new ) );
+	}
+
+	public function test_qa_and_production_use_distinct_vendor_and_upc_namespaces(): void {
+		$qa         = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$production = $this->manifest( 'production', array( $this->manifest_item( 2, 'p1', 'o1', '001234567890' ) ) );
+		$qa_run     = $this->imports->create_from_manifest( $qa, ApprovalManifest::hash( $qa ), 7 );
+		$prod_run   = $this->imports->create_from_manifest( $production, ApprovalManifest::hash( $production ), 7 );
+		$this->imports->start_run( $qa_run );
+		$this->imports->start_run( $prod_run );
+		$qa_item       = $this->imports->items( $qa_run )[0];
+		$prod_item     = $this->imports->items( $prod_run )[0];
+		$qa_token      = $this->imports->claim_item( (int) $qa_item['id'] );
+		$prod_token    = $this->imports->claim_item( (int) $prod_item['id'] );
+		$qa_identity   = $this->imports->reserve_catalog_identity( (int) $qa_item['id'], $qa_token );
+		$prod_identity = $this->imports->reserve_catalog_identity( (int) $prod_item['id'], $prod_token );
+
+		self::assertNotSame( $qa_identity, $prod_identity );
+		self::assertGreaterThan( 0, $this->imports->reserve_upc( $qa_identity, (int) $qa_item['id'], $qa_token ) );
+		self::assertGreaterThan( 0, $this->imports->reserve_upc( $prod_identity, (int) $prod_item['id'], $prod_token ) );
+		$namespaces = array_column( $this->wpdb->tables['wp_ideaxperts_ea_store_identifier_reservations'], 'namespace' );
+		self::assertContains( 'preview:qa', $namespaces );
+		self::assertContains( 'woocommerce_catalog', $namespaces );
+	}
+
+	public function test_invalid_run_transition_is_rejected(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+
+		self::assertFalse( $this->imports->transition_run( $run_id, array( 'queued' ), 'completed' ) );
+		self::assertSame( 'queued', $this->imports->run( $run_id )['status'] );
+	}
+
+	public function test_cancellation_rolls_back_when_a_child_fence_write_fails(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$this->wpdb->fail_query_contains = 'wp_ideaxperts_ea_import_items';
+
+		self::assertFalse( $this->imports->request_cancellation( $run_id ) );
+		self::assertSame( 'running', $this->imports->run( $run_id )['status'] );
+		self::assertContains( 'ROLLBACK', $this->wpdb->queries );
+	}
+
+	public function test_dispatch_compare_and_set_and_old_owner_fencing(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item      = $this->imports->items( $run_id )[0];
+		$action_id = $this->imports->create_action( $run_id, (int) $item['id'], 1, 'validate', 'hook' );
+		$first     = $this->imports->claim_dispatch( $action_id );
+		self::assertNotSame( '', $first );
+		self::assertSame( '', $this->imports->claim_dispatch( $action_id ) );
+		$generation = (int) $this->imports->action( $action_id )['dispatch_generation'];
+		self::assertFalse( $this->imports->record_dispatched( $action_id, 'stale-owner', 91, $generation ) );
+		self::assertTrue( $this->imports->record_dispatched( $action_id, $first, 92, $generation ) );
+	}
+
+	public function test_expired_action_execution_is_reopened_and_old_execution_owner_is_fenced(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item       = $this->imports->items( $run_id )[0];
+		$action_id  = $this->imports->create_action( $run_id, (int) $item['id'], 1, 'validate', 'hook' );
+		$dispatch   = $this->imports->claim_dispatch( $action_id );
+		$generation = (int) $this->imports->action( $action_id )['dispatch_generation'];
+		$this->imports->record_dispatched( $action_id, $dispatch, 92, $generation );
+		$action            = $this->imports->action( $action_id );
+		$execution         = $this->imports->claim_action_execution( $action_id, (string) $action['logical_key'], $generation );
+		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
+
+		self::assertSame( 1, $this->imports->reclaim_expired_action_executions() );
+		self::assertFalse( $this->imports->complete_action_execution( $action_id, (string) $action['logical_key'], $execution ) );
+		self::assertSame( 'retry_wait', $this->imports->action( $action_id )['status'] );
+		self::assertNotSame( '', $this->imports->claim_dispatch( $action_id ) );
+	}
+
+	public function test_live_catalog_change_before_validation_rejects_freshness(): void {
+		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item  = $this->imports->items( $run_id )[0];
+		$token = $this->imports->claim_item( (int) $item['id'] );
+		$this->imports->begin_validation( (int) $item['id'], $token );
+		$this->catalog_state->version = 'UPC or mapping changed';
+		self::assertFalse( $this->imports->accept_freshness( (int) $item['id'], $token ) );
+	}
+
+	public function test_live_catalog_change_after_validation_blocks_final_permit_even_with_reservation(): void {
+		$context = $this->ready_item();
+		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
+		$this->catalog_state->version = 'occupied after validation';
+		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertSame( 'ready', $this->imports->item( $context['item_id'] )['status'] );
+	}
+
+	public function test_final_permit_rejects_wrong_execution_and_freshness_tokens(): void {
+		$context = $this->ready_item();
+		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], 'wrong-worker-token', 1 ) );
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$stored ) {
+			if ( (int) $stored['id'] === $context['item_id'] ) {
+				$stored['live_freshness_token'] = str_repeat( '0', 64 );
+			}
+		}
+		unset( $stored );
+		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+	}
+
+	/** @dataProvider freshnessContextMutations */
+	public function test_final_permit_rejects_freshness_evidence_rebound_to_another_context( callable $mutate ): void {
+		$context = $this->ready_item();
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$stored ) {
+			if ( (int) $stored['id'] === $context['item_id'] ) {
+				$mutate( $stored );
+			}
+		}
+		unset( $stored );
+		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+	}
+
+	/** @return array<string,array{callable(array<string,mixed>&):void}> */
+	public static function freshnessContextMutations(): array {
+		return array(
+			'wrong item'        => array(
+				static function ( array &$item ): void {
+										$item['id'] = (int) $item['id'] + 100; },
+			),
+			'wrong run'         => array(
+				static function ( array &$item ): void {
+										$item['import_run_id'] = (int) $item['import_run_id'] + 100; },
+			),
+			'wrong environment' => array(
+				static function ( array &$item ): void {
+					$item['environment']  = 'qa';
+					$item['source_scope'] = 'endless-aisles:qa';
+				},
+			),
+		);
+	}
+
+	public function test_environment_bound_freshness_rejects_qa_evidence_for_production(): void {
+		$manifest = $this->manifest( 'qa', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item = $this->imports->items( $run_id )[0];
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$stored ) {
+			if ( (int) $stored['id'] === (int) $item['id'] ) {
+				$stored['environment']  = 'production';
+				$stored['source_scope'] = 'endless-aisles:production';
+			}
+		}
+		unset( $stored );
+		$token = $this->imports->claim_item( (int) $item['id'] );
+		$this->imports->begin_validation( (int) $item['id'], $token );
+		self::assertFalse( $this->imports->accept_freshness( (int) $item['id'], $token ) );
+	}
+
+	public function test_vendor_identity_encoding_is_unambiguous_for_hostile_and_edge_ids(): void {
+		self::assertNotSame(
+			ImportRepository::vendor_identity_key( 'endless-aisles:qa', 'option', "a\0b", 'c' ),
+			ImportRepository::vendor_identity_key( 'endless-aisles:qa', 'option', 'a', "b\0c" )
+		);
+		self::assertNotSame( ImportRepository::vendor_identity_key( 's', 'parent', '0', '' ), ImportRepository::vendor_identity_key( 's', 'variation', '0', '' ) );
+		self::assertNotSame( ImportRepository::vendor_identity_key( 's', 'option', '0', '' ), ImportRepository::vendor_identity_key( 's', 'option', '', '0' ) );
+		self::assertNotSame( ImportRepository::vendor_identity_key( 's', 'option', 'é', str_repeat( 'x', 191 ) ), ImportRepository::vendor_identity_key( 's', 'option', 'e', str_repeat( 'x', 191 ) ) );
+	}
+
+	/** @return array{run_id:int,item_id:int,identity_id:int,token:string} */
+	private function ready_item(): array {
+		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		$this->imports->start_run( $run_id );
+		$item  = $this->imports->items( $run_id )[0];
+		$token = $this->imports->claim_item( (int) $item['id'] );
+		$this->imports->begin_validation( (int) $item['id'], $token );
+		$identity = $this->imports->reserve_catalog_identity( (int) $item['id'], $token );
+		$this->imports->reserve_upc( $identity, (int) $item['id'], $token );
+		$this->imports->accept_freshness( (int) $item['id'], $token );
+		return array(
+			'run_id'      => $run_id,
+			'item_id'     => (int) $item['id'],
+			'identity_id' => $identity,
+			'token'       => $token,
+		);
+	}
+
+	/** @param list<array<string,mixed>> $items @return array<string,mixed> */
+	private function manifest( string $environment, array $items ): array {
+		static $dry_run_id = 1000;
+		++$dry_run_id;
+		foreach ( $items as &$item ) {
+			$vendor                     = is_array( $item['vendor'] ?? null ) ? $item['vendor'] : array();
+			$item['group_key']          = hash( 'sha256', $environment . "\0" . (string) ( $vendor['ea_product_id'] ?? '' ) );
+			$context                    = array_merge(
+				$vendor,
+				array(
+					'target_wc_product_id'   => (int) ( $item['target']['wc_product_id'] ?? 0 ),
+					'target_wc_variation_id' => (int) ( $item['target']['wc_variation_id'] ?? 0 ),
+				)
+			);
+			$item['expected_live_hash'] = $this->catalog_state->fingerprint( $context, 'endless-aisles:' . $environment, $environment );
+		}
+		unset( $item );
+		return array(
+			'version'                => 1,
+			'policy_version'         => '3a-v1',
+			'dry_run_id'             => $dry_run_id,
+			'dry_run_generation'     => 1,
+			'environment'            => $environment,
+			'source_scope'           => 'endless-aisles:' . $environment,
+			'approval_generation'    => 1,
+			'matching_settings_hash' => str_repeat( 'a', 64 ),
+			'items'                  => $items,
+		);
+	}
+
+	/** @return array<string,mixed> */
+	private function manifest_item( int $id, string $product, string $option, string $upc ): array {
+		$vendor = array(
+			'ea_product_id'  => $product,
+			'ea_option_id'   => $option,
+			'normalized_upc' => $upc,
+			'classification' => 'new_product_candidate',
+			'review_flags'   => array(),
+			'retail_price'   => '10',
+			'purchasable'    => 1,
+			'discontinued'   => 0,
+		);
+		$target = array(
+			'wc_product_id'   => 0,
+			'wc_variation_id' => 0,
+		);
+		return array(
+			'dry_run_item_id'       => $id,
+			'action'                => 'create',
+			'entity_kind'           => 'option',
+			'group_key'             => hash( 'sha256', 'production' . "\0" . $product ),
+			'vendor'                => $vendor,
+			'target'                => $target,
+			'expected_vendor_hash'  => ApprovalManifest::hash( $vendor ),
+			'expected_local_hash'   => ApprovalManifest::hash( $target ),
+			'expected_mapping_hash' => ApprovalManifest::hash(
+				array(
+					'product' => $product,
+					'option'  => $option,
+					'target'  => $target,
+				)
+			),
+		);
+	}
+}

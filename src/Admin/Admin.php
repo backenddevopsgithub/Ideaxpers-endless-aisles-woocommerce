@@ -20,7 +20,8 @@ final class Admin {
 		private readonly DatabaseLogger $logger,
 		private readonly InventoryScheduler $scheduler,
 		private readonly ConnectionTester $connection_tester,
-		private readonly CatalogDryRunAdmin $catalog_admin
+		private readonly CatalogDryRunAdmin $catalog_admin,
+		private readonly CatalogImportAdmin $import_admin
 	) {}
 
 	public function register(): void {
@@ -28,6 +29,7 @@ final class Admin {
 		add_action( 'admin_post_ideaxperts_ea_save_settings', array( $this, 'save_settings' ) );
 		add_action( 'admin_post_ideaxperts_ea_test_connection', array( $this, 'test_connection' ) );
 		$this->catalog_admin->register();
+		$this->import_admin->register();
 	}
 
 	public function test_connection(): void {
@@ -98,6 +100,7 @@ final class Admin {
 		$this->render_tabs( $tab );
 		if ( 'catalog' === $tab ) {
 			$this->catalog_admin->render();
+			$this->import_admin->render();
 		} elseif ( 'status' === $tab ) {
 			$this->render_status();
 		} elseif ( 'logs' === $tab ) {

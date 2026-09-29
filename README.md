@@ -1,6 +1,6 @@
 # IdeaXperts Endless Aisles for WooCommerce
 
-Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 2 adds a durable, read-only catalog dry run. It does **not** import or modify products, synchronize inventory, or submit orders.
+Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 3A adds the durable, write-safe import workflow foundation, but intentionally stops before any WooCommerce product mutation. It does **not** import or modify products, synchronize inventory, or submit orders.
 
 ## Requirements
 
@@ -22,6 +22,10 @@ Configure the WooCommerce global unique ID, any additional UPC metadata keys, an
 The **Catalog Dry Run** tab always shows local catalog counts and identifier-field configuration. Starting a remote comparison additionally requires an enabled integration, the QA environment, a configured QA token, and a successful QA connection test. Products and variations are scanned in bounded batches; `GET /api/products` is fetched sequentially at 10 records per page. Scheduling is recorded first in a plugin-owned InnoDB outbox, then reconciled with Action Scheduler, so correctness does not depend on Action Scheduler sharing the plugin transaction. Jobs are generation-owned, idempotent, resumable, and cancelled through a verified cleanup lifecycle.
 
 Matching identity is: verified existing mapping, one exact normalized UPC, an exact normalized SKU only when enabled, a new-product candidate, or manual review. Titles, descriptions, brands, and prices are never used for identity. Review flags record discontinued, not-purchasable, duplicate, invalid, conflict, ambiguous, and suspicious-price conditions without replacing `already_linked`. Results retain the vendor product-to-options relationship and can be filtered, searched, and exported from a completed run. CSV cells with leading whitespace, control characters, or spreadsheet formula characters are neutralized. No WooCommerce records are changed.
+
+## Catalog import foundation
+
+Administrators can prepare an immutable approval manifest from a completed QA or Production dry run, confirm it through an expiring server-side token, and queue only automatically eligible actions. Import jobs compare an approval fingerprint with read-only current WooCommerce identifier/target state and scoped mappings, reserve source-scoped catalog identities and UPCs, and stop at `ready`; the final write permit repeats that live check using bounded server-authenticated evidence. QA reservations use a preview namespace, while Production UPC ownership is store-wide. The durable outbox is resumable, generation-fenced, and reconciles missing Action Scheduler jobs. No WooCommerce create, update, image, inventory, or mapping write is performed in Milestone 3A.
 
 ## Development
 
@@ -45,7 +49,7 @@ Build the deployable plugin ZIP on Windows, macOS, or Linux with:
 composer build-release
 ```
 
-The build stages an explicit allowlist, runs `composer install --no-dev --prefer-dist --optimize-autoloader` inside the isolated staging directory, and creates `build/ideaxperts-endless-aisles-0.2.0.zip`. The ZIP includes the production Composer autoloader and excludes tests, development configuration, Git metadata, caches, local environment files, and source-repository secrets. The ignored `build/` directory can be deleted after inspection.
+The build stages an explicit allowlist, runs `composer install --no-dev --prefer-dist --optimize-autoloader` inside the isolated staging directory, and creates `build/ideaxperts-endless-aisles-0.3.0.zip`. The ZIP includes the production Composer autoloader and excludes tests, development configuration, Git metadata, caches, local environment files, and source-repository secrets. The ignored `build/` directory can be deleted after inspection.
 
 The PHPUnit suite is foundational and uses isolated WordPress function stubs. Full WordPress/WooCommerce integration tests remain future work.
 
