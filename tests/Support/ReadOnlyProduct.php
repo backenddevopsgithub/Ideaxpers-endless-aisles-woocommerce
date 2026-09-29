@@ -12,7 +12,8 @@ final class ReadOnlyProduct {
 		/** @var list<int> */
 		private readonly array $children = array(),
 		/** @var array<string,string> */
-		private readonly array $meta = array()
+		private readonly array $meta = array(),
+		private readonly int $parent_id = 0
 	) {}
 
 	public function get_id(): int {
@@ -39,6 +40,9 @@ final class ReadOnlyProduct {
 	/** @return list<int> */
 	public function get_children(): array {
 		return $this->children;
+	}
+	public function get_parent_id(): int {
+		return $this->parent_id;
 	}
 	/** @param array<int,mixed> $arguments */
 	public function __call( string $name, array $arguments ): mixed {

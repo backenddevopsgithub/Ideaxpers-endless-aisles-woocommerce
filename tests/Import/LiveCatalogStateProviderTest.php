@@ -21,7 +21,11 @@ final class LiveCatalogStateProviderTest extends TestCase {
 			'allow_sku_upc_match'  => 'yes',
 		);
 		$GLOBALS['ea_wc_product_map']                         = array();
-		$GLOBALS['ea_wc_products']                            = array( new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '001234567890', 'SKU-1' ) );
+		$GLOBALS['ea_wc_pages']                               = array();
+		$GLOBALS['ea_wc_reads']                               = array();
+		$target                                                = new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '001234567890', 'SKU-1' );
+		$GLOBALS['ea_wc_products']                            = array( $target );
+		$GLOBALS['ea_wc_product_map'][5]                      = $target;
 		$this->provider                                       = new LiveCatalogStateProvider( new SettingsRepository() );
 		$this->item = array(
 			'ea_product_id'          => 'p1',
@@ -45,22 +49,29 @@ final class LiveCatalogStateProviderTest extends TestCase {
 		return array(
 			'target deleted'      => array(
 				static function (): void {
-					$GLOBALS['ea_wc_products'] = array();
+					$GLOBALS['ea_wc_products']    = array();
+					$GLOBALS['ea_wc_product_map'] = array();
 				},
 			),
 			'target UPC changed'  => array(
 				static function (): void {
-					$GLOBALS['ea_wc_products'] = array( new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '008888888888', 'SKU-1' ) );
+					$product                           = new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '008888888888', 'SKU-1' );
+					$GLOBALS['ea_wc_products']         = array( $product );
+					$GLOBALS['ea_wc_product_map'][5]   = $product;
 				},
 			),
 			'target SKU changed'  => array(
 				static function (): void {
-					$GLOBALS['ea_wc_products'] = array( new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '001234567890', 'SKU-2' ) );
+					$product                         = new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '001234567890', 'SKU-2' );
+					$GLOBALS['ea_wc_products']       = array( $product );
+					$GLOBALS['ea_wc_product_map'][5] = $product;
 				},
 			),
 			'target type changed' => array(
 				static function (): void {
-					$GLOBALS['ea_wc_products'] = array( new ReadOnlyProduct( 5, 'variable', 'publish', 'Target', '001234567890', 'SKU-1' ) );
+					$product                         = new ReadOnlyProduct( 5, 'variable', 'publish', 'Target', '001234567890', 'SKU-1' );
+					$GLOBALS['ea_wc_products']       = array( $product );
+					$GLOBALS['ea_wc_product_map'][5] = $product;
 				},
 			),
 			'mapping added'       => array(
@@ -90,15 +101,45 @@ final class LiveCatalogStateProviderTest extends TestCase {
 	}
 
 	public function test_variation_parent_change_changes_fingerprint(): void {
-		$child                                = new ReadOnlyProduct( 11, 'variation', 'publish', 'Child', '009999999999', 'SKU-C' );
+		$child                                = new ReadOnlyProduct( 11, 'variation', 'publish', 'Child', '009999999999', 'SKU-C', array(), array(), 5 );
 		$GLOBALS['ea_wc_product_map'][11]     = $child;
 		$GLOBALS['ea_wc_products']            = array( new ReadOnlyProduct( 5, 'variable', 'publish', 'Parent', '', '', array( 11 ) ) );
 		$this->item['target_wc_variation_id'] = 11;
-		$before                               = $this->provider->fingerprint( $this->item, 'endless-aisles:production', 'production', true );
+		$before                               = $this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
+		$GLOBALS['ea_wc_product_map'][11]     = new ReadOnlyProduct( 11, 'variation', 'publish', 'Child', '009999999999', 'SKU-C', array(), array(), 6 );
 		$GLOBALS['ea_wc_products']            = array( new ReadOnlyProduct( 6, 'variable', 'publish', 'Other parent', '', '', array( 11 ) ) );
-		$this->item['target_wc_product_id']   = 6;
-		$after                                = $this->provider->fingerprint( $this->item, 'endless-aisles:production', 'production', true );
+		$after                                = $this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
 		self::assertNotSame( $before, $after );
+	}
+
+	public function test_target_is_loaded_directly_and_unrelated_products_are_only_streamed(): void {
+		$this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
+		self::assertSame( array( 'wc_get_product', 5 ), $GLOBALS['ea_wc_reads'][0] );
+		self::assertCount( 2, array_filter( $GLOBALS['ea_wc_reads'], static fn( array $read ): bool => 'wc_get_products' === $read[0] ) );
+		$reflection = new \ReflectionClass( $this->provider );
+		self::assertFalse( $reflection->hasProperty( 'objects' ) );
+	}
+
+	public function test_streaming_upc_lookup_finds_later_page_and_detects_all_duplicates(): void {
+		$GLOBALS['ea_wc_pages'] = array(
+			1 => array( new ReadOnlyProduct( 20, 'simple', 'publish', 'Unrelated', '001111111111', 'S-20' ) ),
+			2 => array(
+				new ReadOnlyProduct( 21, 'simple', 'publish', 'Owner A', '009999999999', 'S-21' ),
+				new ReadOnlyProduct( 22, 'simple', 'publish', 'Owner B', '009999999999', 'S-22' ),
+			),
+		);
+		$this->expectException( \RuntimeException::class );
+		$this->provider->fingerprint( $this->item, 'endless-aisles:production', 'production', true );
+	}
+
+	public function test_streaming_no_match_terminates_at_last_page(): void {
+		$GLOBALS['ea_wc_pages'] = array(
+			1 => array( new ReadOnlyProduct( 20, 'simple', 'publish', 'Unrelated', '001111111111', 'S-20' ) ),
+			2 => array(),
+		);
+		$this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
+		$pages = array_map( static fn( array $read ): int => (int) $read[1]['page'], array_values( array_filter( $GLOBALS['ea_wc_reads'], static fn( array $read ): bool => 'wc_get_products' === $read[0] ) ) );
+		self::assertSame( array( 1, 2, 1, 2 ), $pages );
 	}
 
 	/** @dataProvider mappingMutations */

@@ -71,7 +71,7 @@ final class ImportRepositoryTest extends TestCase {
 	public function test_final_permit_rechecks_cancellation_freshness_and_current_owner(): void {
 		$context = $this->ready_item();
 		self::assertTrue( $this->imports->request_cancellation( $context['run_id'] ) );
-		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertFalse( $this->permit( $context ) );
 		self::assertSame( 'cancelled', $this->imports->item( $context['item_id'] )['status'] );
 	}
 
@@ -93,19 +93,20 @@ final class ImportRepositoryTest extends TestCase {
 		$context           = $this->ready_item();
 		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
 
-		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertFalse( $this->permit( $context ) );
 		self::assertSame( 'ready', $this->imports->item( $context['item_id'] )['status'] );
 	}
 
 	public function test_applying_is_not_reclaimed_and_blocks_authoritative_cancellation(): void {
 		$context = $this->ready_item();
-		self::assertTrue( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertTrue( $this->permit( $context ) );
 		$GLOBALS['ea_now'] = '2026-09-28 13:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
 		self::assertSame( 0, $this->imports->reclaim_expired_pre_apply() );
 		self::assertTrue( $this->imports->request_cancellation( $context['run_id'] ) );
 		self::assertFalse( $this->imports->finalize_cancellation( $context['run_id'] ) );
 		self::assertTrue( $this->imports->move_applying_to_reconciling( $context['item_id'], $context['token'] ) );
 		self::assertTrue( $this->imports->finish_reconciliation_without_write( $context['item_id'], $context['token'] ) );
+		self::assertTrue( $this->imports->settle_cancel_requested_action( $context['action_id'], $context['dispatch_generation'], 99 ) );
 		self::assertTrue( $this->imports->finalize_cancellation( $context['run_id'] ) );
 		self::assertSame( 'cancelled', $this->imports->run( $context['run_id'] )['status'] );
 	}
@@ -244,20 +245,20 @@ final class ImportRepositoryTest extends TestCase {
 		$context = $this->ready_item();
 		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
 		$this->catalog_state->version = 'occupied after validation';
-		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertFalse( $this->permit( $context ) );
 		self::assertSame( 'ready', $this->imports->item( $context['item_id'] )['status'] );
 	}
 
 	public function test_final_permit_rejects_wrong_execution_and_freshness_tokens(): void {
 		$context = $this->ready_item();
-		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], 'wrong-worker-token', 1 ) );
+		self::assertFalse( $this->permit( $context, array( 'token' => 'wrong-worker-token' ) ) );
 		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$stored ) {
 			if ( (int) $stored['id'] === $context['item_id'] ) {
 				$stored['live_freshness_token'] = str_repeat( '0', 64 );
 			}
 		}
 		unset( $stored );
-		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertFalse( $this->permit( $context ) );
 	}
 
 	/** @dataProvider freshnessContextMutations */
@@ -269,7 +270,7 @@ final class ImportRepositoryTest extends TestCase {
 			}
 		}
 		unset( $stored );
-		self::assertFalse( $this->imports->acquire_final_write_permit( $context['item_id'], $context['identity_id'], $context['token'], 1 ) );
+		self::assertFalse( $this->permit( $context ) );
 	}
 
 	/** @return array<string,array{callable(array<string,mixed>&):void}> */
@@ -319,12 +320,110 @@ final class ImportRepositoryTest extends TestCase {
 		self::assertNotSame( ImportRepository::vendor_identity_key( 's', 'option', 'é', str_repeat( 'x', 191 ) ), ImportRepository::vendor_identity_key( 's', 'option', 'e', str_repeat( 'x', 191 ) ) );
 	}
 
-	/** @return array{run_id:int,item_id:int,identity_id:int,token:string} */
-	private function ready_item(): array {
-		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, 'p1', 'o1', '001234567890' ) ) );
+	public function test_final_permit_requires_current_action_generation_and_execution_owner(): void {
+		$context = $this->ready_item();
+		self::assertFalse( $this->permit( $context, array( 'action_id' => $context['action_id'] + 100 ) ) );
+		self::assertFalse( $this->permit( $context, array( 'logical_key' => str_repeat( 'f', 64 ) ) ) );
+		self::assertFalse( $this->permit( $context, array( 'dispatch_generation' => $context['dispatch_generation'] + 1 ) ) );
+		self::assertFalse( $this->permit( $context, array( 'action_execution_token' => 'stale-execution' ) ) );
+	}
+
+	public function test_final_permit_rejects_expired_or_terminal_action_execution(): void {
+		$context = $this->ready_item();
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_actions'] as &$stored ) {
+			if ( (int) $stored['id'] === $context['action_id'] ) {
+				$stored['lease_expires_at'] = '2026-09-28 11:59:59';
+			}
+		}
+		unset( $stored );
+		self::assertFalse( $this->permit( $context ) );
+
+		foreach ( array( 'cancelled', 'completed' ) as $status ) {
+			foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_actions'] as &$stored ) {
+				if ( (int) $stored['id'] === $context['action_id'] ) {
+					$stored['status']           = $status;
+					$stored['lease_expires_at'] = '2026-09-28 13:00:00';
+				}
+			}
+			unset( $stored );
+			self::assertFalse( $this->permit( $context ) );
+		}
+	}
+
+	public function test_final_permit_rejects_action_from_another_run_and_item(): void {
+		$first  = $this->ready_item();
+		$second = $this->ready_item( 'p2', '009876543210' );
+		self::assertFalse(
+			$this->permit(
+				$first,
+				array(
+					'action_id'              => $second['action_id'],
+					'logical_key'            => $second['logical_key'],
+					'dispatch_generation'    => $second['dispatch_generation'],
+					'action_execution_token' => $second['action_execution_token'],
+				)
+			)
+		);
+	}
+
+	public function test_final_permit_rejects_action_for_another_item_in_same_run(): void {
+		$context = $this->ready_item();
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_actions'] as &$stored ) {
+			if ( (int) $stored['id'] === $context['action_id'] ) {
+				$stored['import_item_id'] = $context['item_id'] + 1;
+			}
+		}
+		unset( $stored );
+
+		self::assertFalse( $this->permit( $context ) );
+	}
+
+	public function test_old_action_generation_cannot_permit_after_redispatch(): void {
+		$GLOBALS['ea_now'] = '2026-09-28 12:01:00';
+		$context           = $this->ready_item();
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_actions'] as &$stored_action ) {
+			if ( (int) $stored_action['id'] === $context['action_id'] ) {
+				$stored_action['lease_expires_at'] = '2026-09-28 12:05:00';
+			}
+		}
+		unset( $stored_action );
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$stored_item ) {
+			if ( (int) $stored_item['id'] === $context['item_id'] ) {
+				$stored_item['lease_expires_at'] = '2026-09-28 12:06:00';
+			}
+		}
+		unset( $stored_item );
+		$old               = $context;
+		$GLOBALS['ea_now'] = '2026-09-28 12:05:30';
+		self::assertSame( 1, $this->imports->reclaim_expired_action_executions() );
+		$owner   = $this->imports->claim_dispatch( $context['action_id'] );
+		$current = $this->imports->action( $context['action_id'] );
+		self::assertTrue( $this->imports->record_dispatched( $context['action_id'], $owner, 990, (int) $current['dispatch_generation'] ) );
+		$current_execution = $this->imports->claim_action_execution( $context['action_id'], (string) $current['logical_key'], (int) $current['dispatch_generation'] );
+		self::assertFalse( $this->permit( $old ) );
+		self::assertTrue(
+			$this->permit(
+				$context,
+				array(
+					'dispatch_generation'   => (int) $current['dispatch_generation'],
+					'action_execution_token' => $current_execution,
+				)
+			)
+		);
+	}
+
+	/** @return array{run_id:int,item_id:int,identity_id:int,token:string,action_id:int,logical_key:string,dispatch_generation:int,action_execution_token:string} */
+	private function ready_item( string $product = 'p1', string $upc = '001234567890' ): array {
+		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, $product, 'o1', $upc ) ) );
 		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
 		$this->imports->start_run( $run_id );
-		$item  = $this->imports->items( $run_id )[0];
+		$item       = $this->imports->items( $run_id )[0];
+		$action_id  = $this->imports->create_action( $run_id, (int) $item['id'], 1, 'validate', 'permit-test' );
+		$dispatch   = $this->imports->claim_dispatch( $action_id );
+		$action     = $this->imports->action( $action_id );
+		$generation = (int) $action['dispatch_generation'];
+		$this->imports->record_dispatched( $action_id, $dispatch, 99, $generation );
+		$execution = $this->imports->claim_action_execution( $action_id, (string) $action['logical_key'], $generation );
 		$token = $this->imports->claim_item( (int) $item['id'] );
 		$this->imports->begin_validation( (int) $item['id'], $token );
 		$identity = $this->imports->reserve_catalog_identity( (int) $item['id'], $token );
@@ -335,6 +434,28 @@ final class ImportRepositoryTest extends TestCase {
 			'item_id'     => (int) $item['id'],
 			'identity_id' => $identity,
 			'token'       => $token,
+			'action_id'   => $action_id,
+			'logical_key' => (string) $action['logical_key'],
+			'dispatch_generation'   => $generation,
+			'action_execution_token' => $execution,
+		);
+	}
+
+	/**
+	 * @param array<string,mixed> $context
+	 * @param array<string,mixed> $overrides
+	 */
+	private function permit( array $context, array $overrides = array() ): bool {
+		$values = array_merge( $context, $overrides );
+		return $this->imports->acquire_final_write_permit(
+			(int) $values['item_id'],
+			(int) $values['identity_id'],
+			(string) $values['token'],
+			1,
+			(int) $values['action_id'],
+			(string) $values['logical_key'],
+			(int) $values['dispatch_generation'],
+			(string) $values['action_execution_token']
 		);
 	}
 

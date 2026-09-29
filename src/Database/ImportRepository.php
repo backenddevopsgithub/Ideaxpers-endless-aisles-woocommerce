@@ -490,10 +490,11 @@ final class ImportRepository {
 	}
 
 	/** Final cancellation/freshness/ownership gate before any future external write. */
-	public function acquire_final_write_permit( int $item_id, int $identity_id, string $token, int $approval_generation ): bool {
+	public function acquire_final_write_permit( int $item_id, int $identity_id, string $token, int $approval_generation, int $action_id, string $logical_key, int $dispatch_generation, string $action_execution_token ): bool {
 		global $wpdb;
-		$hint = $this->item( $item_id );
-		if ( ! $hint || ! $this->catalog_state ) {
+		$hint        = $this->item( $item_id );
+		$action_hint = $this->action( $action_id );
+		if ( ! $hint || ! $action_hint || ! $this->catalog_state || '' === $logical_key || $dispatch_generation < 1 || '' === $action_execution_token ) {
 			return false;
 		}
 		if ( ! $this->begin() ) {
@@ -501,12 +502,16 @@ final class ImportRepository {
 		}
 		$open = true;
 		try {
-			// Always lock run before item so cancellation and permit acquisition serialize.
+			// Canonical permit order: run -> import action -> item -> catalog identity -> UPC reservation.
 			$run          = $this->locked_run( (int) $hint['import_run_id'] );
+			$action       = $this->locked_action( $action_id );
 			$item         = $this->locked_item( $item_id );
 			$now          = current_time( 'mysql', true );
 			$freshness_at = $item ? strtotime( (string) ( $item['live_freshness_at'] ?? '' ) ) : false;
-			if ( ! $item ) {
+			if ( ! $run || ! $action || ! $item ) {
+				return $this->abort( $open );
+			}
+			if ( (int) $action['import_run_id'] !== (int) $run['id'] || (int) $action['import_item_id'] !== $item_id || (string) $action['logical_key'] !== $logical_key || (int) $action['dispatch_generation'] !== $dispatch_generation || 'running' !== (string) $action['status'] || ! hash_equals( (string) $action['execution_token'], $action_execution_token ) || empty( $action['lease_expires_at'] ) || (string) $action['lease_expires_at'] <= $now || (int) $action['claim_generation'] !== (int) $run['claim_generation'] || (string) $action['source_scope'] !== (string) $run['source_scope'] || (string) $action['environment'] !== (string) $run['environment'] ) {
 				return $this->abort( $open );
 			}
 			try {
@@ -520,7 +525,7 @@ final class ImportRepository {
 				return $this->abort( $open );
 			}
 			$id = $this->locked_identity( $identity_id );
-			if ( ! $run || 'running' !== $run['status'] || null !== $run['cancellation_authoritative_at'] || (int) $run['approval_generation'] !== $approval_generation || (string) $run['source_scope'] !== (string) $item['source_scope'] || (string) $run['environment'] !== (string) $item['environment'] || ! $id || 'reserved' !== (string) $id['reservation_status'] || (int) $id['owning_import_item_id'] !== $item_id || ! hash_equals( (string) $id['owner_token'], $token ) || (string) $id['source_scope'] !== (string) $item['source_scope'] || (string) $id['environment'] !== (string) $item['environment'] ) {
+			if ( 'running' !== $run['status'] || null !== $run['cancellation_authoritative_at'] || (int) $run['approval_generation'] !== $approval_generation || (string) $run['source_scope'] !== (string) $item['source_scope'] || (string) $run['environment'] !== (string) $item['environment'] || ! $id || 'reserved' !== (string) $id['reservation_status'] || (int) $id['owning_import_item_id'] !== $item_id || ! hash_equals( (string) $id['owner_token'], $token ) || (string) $id['source_scope'] !== (string) $item['source_scope'] || (string) $id['environment'] !== (string) $item['environment'] ) {
 				return $this->abort( $open );
 			}
 			if ( '' !== (string) $item['normalized_upc'] ) {
@@ -649,10 +654,10 @@ final class ImportRepository {
 			) ) {
 				return $this->abort( $open );
 			}
-			$item_table     = $wpdb->prefix . 'ideaxperts_ea_import_items';
-			$items_result   = $wpdb->query( $wpdb->prepare( "UPDATE {$item_table} SET status = %s, execution_token = %s, lease_expires_at = NULL, updated_at = %s WHERE import_run_id = %d AND status IN (%s,%s,%s,%s,%s)", 'cancelled', '', $now, $run_id, 'pending', 'leased', 'validating', 'ready', 'retry_wait' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$action_table   = $wpdb->prefix . 'ideaxperts_ea_import_actions';
 			$actions_result = $wpdb->query( $wpdb->prepare( "UPDATE {$action_table} SET status = %s, updated_at = %s WHERE import_run_id = %d AND status IN (%s,%s,%s,%s,%s)", 'cancel_requested', $now, $run_id, 'pending', 'dispatching', 'dispatched', 'running', 'retry_wait' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$item_table     = $wpdb->prefix . 'ideaxperts_ea_import_items';
+			$items_result   = $wpdb->query( $wpdb->prepare( "UPDATE {$item_table} SET status = %s, execution_token = %s, lease_expires_at = NULL, updated_at = %s WHERE import_run_id = %d AND status IN (%s,%s,%s,%s,%s)", 'cancelled', '', $now, $run_id, 'pending', 'leased', 'validating', 'ready', 'retry_wait' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			if ( false === $items_result || false === $actions_result || ! $this->event( $run_id, 0, (int) $run['dry_run_id'], 'run_cancelling', 0, array(), $run ) || false === $wpdb->query( 'COMMIT' ) ) {
 				return $this->abort( $open );
 			}
@@ -676,9 +681,11 @@ final class ImportRepository {
 			if ( ! $run || 'cancelling' !== $run['status'] ) {
 				return $this->abort( $open );
 			}
-			$item_table = $wpdb->prefix . 'ideaxperts_ea_import_items';
-			$unresolved = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$item_table} WHERE import_run_id = %d AND status IN (%s,%s) LIMIT 1", $run_id, 'applying', 'reconciling' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			if ( null !== $unresolved ) {
+			$item_table   = $wpdb->prefix . 'ideaxperts_ea_import_items';
+			$unresolved   = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$item_table} WHERE import_run_id = %d AND status IN (%s,%s) LIMIT 1", $run_id, 'applying', 'reconciling' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$action_table = $wpdb->prefix . 'ideaxperts_ea_import_actions';
+			$actionable   = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$action_table} WHERE import_run_id = %d AND status IN (%s,%s,%s,%s,%s,%s) LIMIT 1", $run_id, 'pending', 'dispatching', 'dispatched', 'running', 'retry_wait', 'cancel_requested' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( null !== $unresolved || null !== $actionable ) {
 				return $this->abort( $open );
 			}
 			$now = current_time( 'mysql', true );
@@ -931,6 +938,78 @@ final class ImportRepository {
 			return false;
 		}
 		return $this->complete_action_execution( $action_id, $logical_key, $execution_token );
+	}
+
+	/** @return list<array<string,mixed>> */
+	public function cancel_requested_actions( int $limit = self::BATCH_SIZE ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_import_actions';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE status = %s ORDER BY id ASC LIMIT %d", 'cancel_requested', max( 1, min( self::BATCH_SIZE, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/** Settle a cancellation only after the exact scheduler delivery is neutralized. */
+	public function settle_cancel_requested_action( int $action_id, int $dispatch_generation, int $scheduler_id ): bool {
+		global $wpdb;
+		$hint = $this->action( $action_id );
+		if ( ! $hint || ! $this->begin() ) {
+			return false;
+		}
+		$open = true;
+		try {
+			$run    = $this->locked_run( (int) $hint['import_run_id'] );
+			$action = $this->locked_action( $action_id );
+			if ( ! $run || ! $action || ! in_array( (string) $run['status'], array( 'cancelling', 'cancelled' ), true ) || (int) $action['dispatch_generation'] !== $dispatch_generation || (int) ( $action['action_scheduler_id'] ?? 0 ) !== $scheduler_id ) {
+				return $this->abort( $open );
+			}
+			if ( 'cancelled' === (string) $action['status'] ) {
+				if ( false === $wpdb->query( 'COMMIT' ) ) {
+					return $this->abort( $open );
+				}
+				$open = false;
+				return true;
+			}
+			$now = current_time( 'mysql', true );
+			if ( 'cancel_requested' !== (string) $action['status'] || ( '' !== (string) ( $action['execution_token'] ?? '' ) && ! empty( $action['lease_expires_at'] ) && (string) $action['lease_expires_at'] > $now ) ) {
+				return $this->abort( $open );
+			}
+			$ok = $wpdb->update(
+				$wpdb->prefix . 'ideaxperts_ea_import_actions',
+				array(
+					'status'                    => 'cancelled',
+					'dispatch_token'            => '',
+					'dispatch_started_at'       => null,
+					'dispatch_lease_expires_at' => null,
+					'execution_token'           => '',
+					'started_at'                => null,
+					'lease_expires_at'          => null,
+					'updated_at'                => $now,
+				),
+				array(
+					'id'                  => $action_id,
+					'status'              => 'cancel_requested',
+					'dispatch_generation' => $dispatch_generation,
+				)
+			);
+			if ( false === $ok || 1 !== (int) $wpdb->rows_affected || ! $this->action_event( $action, 'action_cancelled', 'cancelled' ) || false === $wpdb->query( 'COMMIT' ) ) {
+				return $this->abort( $open );
+			}
+			$open = false;
+			return true;
+		} finally {
+			if ( $open ) {
+				$this->rollback();
+			}
+		}
+	}
+
+	/** A delivered stale callback can conclusively neutralize its own exact generation. */
+	public function settle_cancelled_callback( int $action_id, string $logical_key, int $dispatch_generation ): bool {
+		$action = $this->action( $action_id );
+		if ( ! $action || (string) $action['logical_key'] !== $logical_key || (int) $action['dispatch_generation'] !== $dispatch_generation ) {
+			return false;
+		}
+		return $this->settle_cancel_requested_action( $action_id, $dispatch_generation, (int) ( $action['action_scheduler_id'] ?? 0 ) );
 	}
 
 	public function fail_dispatch( int $action_id, string $token, string $failure_code = 'enqueue_failed' ): bool {
@@ -1341,6 +1420,13 @@ final class ImportRepository {
 	private function locked_identity( int $identity_id ): ?array {
 		global $wpdb;
 		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $wpdb->prefix . 'ideaxperts_ea_catalog_identities WHERE id = %d FOR UPDATE', $identity_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		return is_array( $row ) ? $row : null;
+	}
+
+	/** @return array<string,mixed>|null */
+	private function locked_action( int $action_id ): ?array {
+		global $wpdb;
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $wpdb->prefix . 'ideaxperts_ea_import_actions WHERE id = %d FOR UPDATE', $action_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 		return is_array( $row ) ? $row : null;
 	}
 

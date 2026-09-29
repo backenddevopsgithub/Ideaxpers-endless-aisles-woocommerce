@@ -6,10 +6,9 @@ use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 
 defined( 'ABSPATH' ) || exit;
 
-/** Read-only, request-local view of the authoritative WooCommerce catalog. */
+/** Read-only, bounded-memory view of authoritative WooCommerce catalog state. */
 final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
-	/** @var array<string,array<string,mixed>>|null */
-	private ?array $objects = null;
+	private const PAGE_SIZE = 100;
 
 	public function __construct( private readonly SettingsRepository $settings ) {}
 
@@ -18,21 +17,15 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) || 'endless-aisles:' . $environment !== $source_scope ) {
 			throw new \RuntimeException( 'Catalog freshness source is invalid.' );
 		}
-		if ( $force_refresh ) {
-			$this->objects = null;
-		}
-		$objects      = $this->objects();
+		// Reads are deliberately uncached. A forced refresh therefore always observes
+		// the same scoped sources without rebuilding a complete catalog snapshot.
+		unset( $force_refresh );
 		$product_id   = (int) ( $item['target_wc_product_id'] ?? $item['wc_product_id'] ?? 0 );
 		$variation_id = (int) ( $item['target_wc_variation_id'] ?? $item['wc_variation_id'] ?? 0 );
 		$target_key   = $product_id . ':' . $variation_id;
 		$upc          = (string) ( $item['normalized_upc'] ?? '' );
-		$owners       = array();
-		foreach ( $objects as $key => $object ) {
-			if ( '' !== $upc && in_array( $upc, $object['upcs'], true ) ) {
-				$owners[] = $key;
-			}
-		}
-		sort( $owners, SORT_STRING );
+		$target       = $this->target( $product_id, $variation_id );
+		$owners       = '' === $upc ? array() : $this->upc_owners( $upc );
 		if ( 'production' === $environment ) {
 			foreach ( $owners as $owner ) {
 				if ( $owner !== $target_key ) {
@@ -52,7 +45,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 				'version'      => 1,
 				'source_scope' => $source_scope,
 				'environment'  => $environment,
-				'target'       => $objects[ $target_key ] ?? null,
+				'target'       => $target,
 				'upc'          => $upc,
 				'upc_owners'   => $owners,
 				'mappings'     => $mappings,
@@ -60,51 +53,72 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		);
 	}
 
-	/** @return array<string,array<string,mixed>> */
-	private function objects(): array {
-		if ( null !== $this->objects ) {
-			return $this->objects;
+	/** @return array<string,mixed>|null */
+	private function target( int $product_id, int $variation_id ): ?array {
+		$object_id = $variation_id > 0 ? $variation_id : $product_id;
+		if ( $object_id < 1 ) {
+			return null;
 		}
-		$this->objects = array();
-		for ( $page = 1; ; ++$page ) {
-			// @phpstan-ignore-next-line WooCommerce is checked before services boot.
-			$result   = \wc_get_products(
-				array(
-					'limit'    => 100,
-					'page'     => $page,
-					'paginate' => true,
-					'return'   => 'objects',
-					// @phpstan-ignore-next-line
-					'status'   => array_keys( \wc_get_product_statuses() ),
-				)
-			);
-			$products = is_object( $result ) && isset( $result->products ) && is_array( $result->products ) ? $result->products : array();
-			$pages    = is_object( $result ) && isset( $result->max_num_pages ) ? max( 1, (int) $result->max_num_pages ) : $page;
-			foreach ( $products as $product ) {
-				if ( is_object( $product ) ) {
-					$this->capture( $product, 0 );
-					if ( method_exists( $product, 'get_children' ) && method_exists( $product, 'get_id' ) ) {
-						foreach ( $product->get_children() as $child_id ) {
-							// @phpstan-ignore-next-line
-							$child = \wc_get_product( (int) $child_id );
-							if ( is_object( $child ) ) {
-								$this->capture( $child, (int) $product->get_id() );
-							}
-						}
-					}
-				}
-			}
-			if ( $page >= $pages ) {
-				break;
-			}
+		// @phpstan-ignore-next-line WooCommerce is checked before services boot.
+		$product = \wc_get_product( $object_id );
+		if ( ! is_object( $product ) ) {
+			return null;
 		}
-		ksort( $this->objects, SORT_STRING );
-		return $this->objects;
+		$parent_id = $variation_id > 0 && method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
+		return $this->capture( $product, $parent_id );
 	}
 
-	private function capture( object $product, int $parent_id ): void {
+	/** @return list<string> */
+	private function upc_owners( string $upc ): array {
+		$owners = array();
+		// Products and variations are separate bounded queries so one variable
+		// product cannot materialize its complete child-ID collection.
+		// @phpstan-ignore-next-line WooCommerce is checked before services boot.
+		$type_groups = array( array_keys( \wc_get_product_types() ), array( 'variation' ) );
+		foreach ( $type_groups as $types ) {
+			for ( $page = 1; ; ++$page ) {
+				// @phpstan-ignore-next-line WooCommerce is checked before services boot.
+				$result   = \wc_get_products(
+					array(
+						'limit'    => self::PAGE_SIZE,
+						'page'     => $page,
+						'paginate' => true,
+						'return'   => 'objects',
+						'type'     => $types,
+						// @phpstan-ignore-next-line
+						'status'   => array_keys( \wc_get_product_statuses() ),
+					)
+				);
+				$products = is_object( $result ) && isset( $result->products ) && is_array( $result->products ) ? $result->products : array();
+				$pages    = is_object( $result ) && isset( $result->max_num_pages ) ? max( 1, (int) $result->max_num_pages ) : $page;
+				foreach ( $products as $product ) {
+					if ( is_object( $product ) ) {
+						$parent_id = method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
+						$this->record_owner( $owners, $product, $parent_id, $upc );
+					}
+				}
+				if ( $page >= $pages ) {
+					break;
+				}
+			}
+		}
+		$keys = array_keys( $owners );
+		sort( $keys, SORT_STRING );
+		return $keys;
+	}
+
+	/** @param array<string,true> $owners */
+	private function record_owner( array &$owners, object $product, int $parent_id, string $upc ): void {
+		$captured = $this->capture( $product, $parent_id );
+		if ( null !== $captured && in_array( $upc, $captured['upcs'], true ) ) {
+			$owners[ $captured['wc_product_id'] . ':' . $captured['wc_variation_id'] ] = true;
+		}
+	}
+
+	/** @return array<string,mixed>|null */
+	private function capture( object $product, int $parent_id ): ?array {
 		if ( ! method_exists( $product, 'get_id' ) || ! method_exists( $product, 'get_type' ) || ! method_exists( $product, 'get_status' ) || ! method_exists( $product, 'get_sku' ) || ! method_exists( $product, 'get_meta' ) ) {
-			return;
+			return null;
 		}
 		$product_id   = $parent_id > 0 ? $parent_id : (int) $product->get_id();
 		$variation_id = $parent_id > 0 ? (int) $product->get_id() : 0;
@@ -117,7 +131,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		}
 		$upcs = array_values( array_unique( array_filter( $upcs, static fn( string $value ): bool => '' !== $value ) ) );
 		sort( $upcs, SORT_STRING );
-		$this->objects[ $product_id . ':' . $variation_id ] = array(
+		return array(
 			'wc_product_id'     => $product_id,
 			'wc_variation_id'   => $variation_id,
 			'product_type'      => (string) $product->get_type(),

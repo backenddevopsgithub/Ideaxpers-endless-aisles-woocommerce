@@ -25,6 +25,7 @@ $GLOBALS['ea_wc_products']        = array();
 $GLOBALS['ea_wc_product_map']     = array();
 $GLOBALS['ea_wc_writes']          = array();
 $GLOBALS['ea_wc_max_pages']       = 1;
+$GLOBALS['ea_wc_pages']           = array();
 $GLOBALS['ea_wc_reads']           = array();
 $GLOBALS['ea_remote_response']    = array(
 	'response' => array( 'code' => 200 ),
@@ -236,10 +237,20 @@ function wc_update_product_stock( mixed ...$args ): int {
 
 function wc_get_products( array $args ): object {
 	$GLOBALS['ea_wc_reads'][] = array( 'wc_get_products', $args );
+	$page     = max( 1, (int) ( $args['page'] ?? 1 ) );
+	$pages    = is_array( $GLOBALS['ea_wc_pages'] ?? null ) ? $GLOBALS['ea_wc_pages'] : array();
+	$products = array_key_exists( $page, $pages ) && is_array( $pages[ $page ] ) ? $pages[ $page ] : ( is_array( $GLOBALS['ea_wc_products'] ) ? $GLOBALS['ea_wc_products'] : array() );
+	$types    = array_map( 'strval', (array) ( $args['type'] ?? array() ) );
+	if ( array() !== $types ) {
+		$products = array_values( array_filter( $products, static fn( object $product ): bool => method_exists( $product, 'get_type' ) && in_array( (string) $product->get_type(), $types, true ) ) );
+	}
 	return (object) array(
-		'products'      => is_array( $GLOBALS['ea_wc_products'] ) ? $GLOBALS['ea_wc_products'] : array(),
-		'max_num_pages' => (int) ( $GLOBALS['ea_wc_max_pages'] ?? 1 ),
+		'products'      => $products,
+		'max_num_pages' => array() !== $pages ? count( $pages ) : (int) ( $GLOBALS['ea_wc_max_pages'] ?? 1 ),
 	);
+}
+function wc_get_product_types(): array {
+	return array( 'simple' => 'Simple', 'variable' => 'Variable' );
 }
 function wc_get_product_statuses(): array {
 	return array( 'publish' => 'Published' );

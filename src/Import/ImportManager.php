@@ -47,6 +47,17 @@ final class ImportManager {
 	public function reconcile(): void {
 		$this->imports->reclaim_expired_pre_apply();
 		$this->imports->reclaim_expired_action_executions();
+		foreach ( $this->imports->cancel_requested_actions() as $action ) {
+			$args  = $this->action_args( $action );
+			$state = $this->find_action_state( (string) $action['hook'], $args, (int) ( $action['action_scheduler_id'] ?? 0 ) );
+			if ( 'pending' === $state && function_exists( 'as_unschedule_action' ) ) {
+				as_unschedule_action( (string) $action['hook'], $args, self::GROUP );
+				$state = $this->find_action_state( (string) $action['hook'], $args, (int) ( $action['action_scheduler_id'] ?? 0 ) );
+			}
+			if ( ! in_array( $state, array( 'pending', 'in-progress' ), true ) ) {
+				$this->imports->settle_cancel_requested_action( (int) $action['id'], (int) $action['dispatch_generation'], (int) ( $action['action_scheduler_id'] ?? 0 ) );
+			}
+		}
 		foreach ( $this->imports->stale_dispatches() as $action ) {
 			$args = $this->action_args( $action );
 			$id   = $this->find_action( (string) $action['hook'], $args );
@@ -84,6 +95,12 @@ final class ImportManager {
 				$this->imports->reopen_lost_dispatched( (int) $action['id'], (int) $action['dispatch_generation'], (int) $action['action_scheduler_id'], $reason );
 			}
 		}
+		foreach ( $this->imports->active_run_ids() as $run_id ) {
+			$run = $this->imports->run( $run_id );
+			if ( $run && 'cancelling' === (string) $run['status'] ) {
+				$this->imports->finalize_cancellation( $run_id );
+			}
+		}
 	}
 
 	public function validate_item( mixed $action_id = 0, mixed $logical_key = '', mixed $dispatch_generation = 0 ): void {
@@ -91,7 +108,11 @@ final class ImportManager {
 		$logical_key = (string) $logical_key;
 		$generation  = (int) $dispatch_generation;
 		$execution   = $this->imports->claim_action_execution( $action_id, $logical_key, $generation );
-		$action      = '' !== $execution ? $this->imports->action( $action_id ) : null;
+		if ( '' === $execution ) {
+			$this->imports->settle_cancelled_callback( $action_id, $logical_key, $generation );
+			return;
+		}
+		$action = $this->imports->action( $action_id );
 		if ( ! $action ) {
 			return;
 		}
@@ -165,7 +186,7 @@ final class ImportManager {
 			)
 		);
 		foreach ( is_array( $actions ) ? $actions : array() as $action ) {
-			if ( is_object( $action ) && method_exists( $action, 'get_id' ) && (int) $action->get_id() === $scheduler_id && method_exists( $action, 'get_args' ) && $action->get_args() === $args && method_exists( $action, 'get_status' ) ) {
+			if ( is_object( $action ) && method_exists( $action, 'get_id' ) && ( $scheduler_id < 1 || (int) $action->get_id() === $scheduler_id ) && method_exists( $action, 'get_args' ) && $action->get_args() === $args && method_exists( $action, 'get_status' ) ) {
 				return (string) $action->get_status();
 			}
 		}

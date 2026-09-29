@@ -198,9 +198,103 @@ final class ImportManagerTest extends TestCase {
 		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
 
 		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
 
 		self::assertSame( 'cancelled', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'cancelled', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertTrue( $this->imports->finalize_cancellation( $run_id ) );
+	}
+
+	public function test_pending_cancel_is_unscheduled_settled_and_run_finalized_idempotently(): void {
+		$run_id = $this->create_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+		self::assertFalse( $this->imports->finalize_cancellation( $run_id ) );
+
+		$this->manager->reconcile();
+		$this->manager->reconcile();
+
+		self::assertSame( 'cancelled', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( 'cancelled', $this->imports->run( $run_id )['status'] );
+		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
+	}
+
+	public function test_cancel_reconciles_ambiguous_dispatch_without_recorded_scheduler_id(): void {
+		$run_id = $this->create_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_actions'] as &$stored ) {
+			if ( (int) $stored['id'] === (int) $action['id'] ) {
+				$stored['action_scheduler_id'] = null;
+			}
+		}
+		unset( $stored );
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+
+		$this->manager->reconcile();
+
+		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
+		self::assertSame( 'cancelled', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( 'cancelled', $this->imports->run( $run_id )['status'] );
+	}
+
+	public function test_two_cancellation_reconcilers_settle_the_same_action_idempotently(): void {
+		$run_id = $this->create_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
+		$GLOBALS['ea_action_queue'] = array();
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+
+		self::assertTrue( $this->imports->settle_cancel_requested_action( (int) $action['id'], (int) $action['dispatch_generation'], (int) $action['action_scheduler_id'] ) );
+		self::assertTrue( $this->imports->settle_cancel_requested_action( (int) $action['id'], (int) $action['dispatch_generation'], (int) $action['action_scheduler_id'] ) );
+		self::assertTrue( $this->imports->finalize_cancellation( $run_id ) );
+		self::assertSame( 'cancelled', $this->imports->run( $run_id )['status'] );
+	}
+
+	/** @dataProvider terminalCancellationSchedulerStates */
+	public function test_missing_failed_cancelled_or_completed_delivery_settles_cancellation( string $state ): void {
+		$run_id = $this->create_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
+		if ( '' === $state ) {
+			$GLOBALS['ea_action_queue'] = array();
+		} else {
+			$GLOBALS['ea_action_queue'][0]['status'] = $state;
+		}
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+		$this->manager->reconcile();
+		self::assertSame( 'cancelled', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( 'cancelled', $this->imports->run( $run_id )['status'] );
+	}
+
+	/** @return array<string,array{string}> */
+	public static function terminalCancellationSchedulerStates(): array {
+		return array(
+			'missing'   => array( '' ),
+			'failed'    => array( 'failed' ),
+			'cancelled' => array( 'canceled' ),
+			'completed' => array( 'complete' ),
+		);
+	}
+
+	public function test_in_progress_or_active_execution_blocks_cancellation_until_resolved(): void {
+		$run_id = $this->create_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action                                  = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
+		$GLOBALS['ea_action_queue'][0]['status'] = 'in-progress';
+		$execution = $this->imports->claim_action_execution( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertNotSame( '', $execution );
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+		$this->manager->reconcile();
 		self::assertSame( 'cancel_requested', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( 'cancelling', $this->imports->run( $run_id )['status'] );
+
+		$GLOBALS['ea_now']                       = '2026-09-28 13:00:00';
+		$GLOBALS['ea_action_queue'][0]['status'] = 'complete';
+		$this->manager->reconcile();
+		self::assertSame( 'cancelled', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( 'cancelled', $this->imports->run( $run_id )['status'] );
 	}
 
 	public function test_action_close_failure_after_ready_is_reconciled_by_duplicate_callback(): void {
