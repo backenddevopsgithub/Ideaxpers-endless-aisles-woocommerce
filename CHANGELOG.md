@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed completed QA previews blocking later independent previews: terminal QA reservations become reusable, active contention retries, and cancellation/recovery retain ownership until settled.
+- Bounded all import audit payloads deterministically within 4,000 bytes, preserving complete identity/operation references and hashing verbose mapping context; maximum utf8mb4 identifiers no longer strand finalization.
+
+- Fixed QA existing-product linking claiming shared Production mappings and WooCommerce ownership: QA now records preview-only success with NULL global ownership fields, environment-labelled audit, and explicit administrator preview notices. Production mappings and unique ownership constraints remain authoritative and unchanged.
+
+- Added Milestone 3B explicit exact-UPC/exact-SKU linking for existing simple products and variations, with no WooCommerce content mutation.
+- Added atomic mapping/catalog-identity finalization, exact mapping adoption, target and identifier revalidation, action execution fencing, and rollback-safe audit settlement.
+- Added explicit per-item administrator approval for existing matches and bounded live duplicate-SKU/UPC ownership checks.
 - Added schema 3.0.0 and Milestone 3A's immutable approval manifests, deterministic import policy, source/environment isolation, and server-side eligibility derivation.
 - Added durable import runs/items, vendor snapshots, catalog identity and UPC reservations, audit events, and an Action Scheduler outbox with exact-argument reconciliation.
 - Added final-write permit, applying/reconciling/manual-recovery, cancellation-fence, lease, and token-ownership infrastructure while deliberately leaving all WooCommerce product writes disabled.

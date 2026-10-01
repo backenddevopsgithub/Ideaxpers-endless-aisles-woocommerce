@@ -3,14 +3,71 @@ namespace IdeaXperts\EndlessAisles\Tests\Database;
 
 use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Import\ApprovalManifest;
+use IdeaXperts\EndlessAisles\Import\ImportPolicy;
 use IdeaXperts\EndlessAisles\Tests\Support\DryRunMemoryWpdb;
 use IdeaXperts\EndlessAisles\Tests\Support\FixedCatalogStateProvider;
 use PHPUnit\Framework\TestCase;
+
+require_once dirname( __DIR__ ) . '/Support/SigningKeyConstants.php';
 
 final class ImportRepositoryTest extends TestCase {
 	private DryRunMemoryWpdb $wpdb;
 	private ImportRepository $imports;
 	private FixedCatalogStateProvider $catalog_state;
+
+	protected function tearDown(): void {
+		\IdeaXperts\EndlessAisles\Tests\Support\SigningKeyConstants::$values = null;
+	}
+
+	/** @dataProvider unusableSigningKeys */
+	public function test_unusable_keys_reject_creation_verification_and_forged_permits( array $keys ): void {
+		$context = $this->ready_item();
+		\IdeaXperts\EndlessAisles\Tests\Support\SigningKeyConstants::$values = $keys;
+		self::assertSame( 'wordpress_signing_keys_invalid', $this->imports->freshness_signing_configuration_error() );
+		self::assertFalse( $this->permit( $context ) ); // Previously valid evidence must also fail verification.
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$item ) {
+			$item['status'] = 'validating';
+		}
+		unset( $item );
+		self::assertFalse( $this->imports->accept_freshness( $context['item_id'], $context['token'] ) );
+		$item = $this->imports->item( $context['item_id'] );
+		$payload = wp_json_encode( array( (int) $item['id'], (int) $item['import_run_id'], $item['source_scope'], $item['environment'], (int) $item['approval_generation'], $item['live_freshness_hash'], $item['live_freshness_at'] ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		$predictable_key = (string) ( $keys['AUTH_KEY'] ?? '' ) . "\0" . (string) ( $keys['SECURE_AUTH_KEY'] ?? '' );
+		foreach ( $this->wpdb->tables['wp_ideaxperts_ea_import_items'] as &$stored ) {
+			$stored['status'] = 'ready';
+			$stored['live_freshness_token'] = hash_hmac( 'sha256', $payload, $predictable_key );
+		}
+		unset( $stored );
+		self::assertFalse( $this->permit( $context ) );
+		self::assertSame( 'ready', $this->imports->item( $context['item_id'] )['status'] );
+		self::assertSame( 'not_permitted', $this->imports->finalize_existing_link( $context['item_id'], $context['identity_id'], $context['token'], 1, $context['action_id'], $context['logical_key'], $context['dispatch_generation'], $context['action_execution_token'] ) );
+	}
+
+	public static function unusableSigningKeys(): array {
+		$valid = array( 'AUTH_KEY' => AUTH_KEY, 'SECURE_AUTH_KEY' => SECURE_AUTH_KEY );
+		$cases = array( 'both undefined' => array( array() ) );
+		foreach ( array( 'AUTH_KEY', 'SECURE_AUTH_KEY' ) as $name ) {
+			$missing = $valid;
+			unset( $missing[ $name ] );
+			$cases[ $name . ' undefined' ] = array( $missing );
+			foreach ( array( 'empty' => '', 'whitespace' => " \t\r\n ", 'WordPress default' => 'put your unique phrase here', 'padded default' => '  PUT YOUR UNIQUE PHRASE HERE  put your unique phrase here ', 'short' => 'short-secret', 'single byte' => str_repeat( 'x', 64 ), 'repeated pattern' => str_repeat( 'abcdefghijklmnop', 4 ), 'non-string' => false, 'control bytes' => str_repeat( "\0", 32 ) . AUTH_KEY ) as $label => $value ) {
+				$keys = $valid;
+				$keys[ $name ] = $value;
+				$cases[ $name . ' ' . $label ] = array( $keys );
+			}
+		}
+		return $cases;
+	}
+
+	public function test_valid_signing_secrets_create_evidence_that_verifies(): void {
+		self::assertSame( '', $this->imports->freshness_signing_configuration_error() );
+		$context = $this->ready_item();
+		$item = $this->imports->item( $context['item_id'] );
+		$payload = wp_json_encode( array( (int) $item['id'], (int) $item['import_run_id'], $item['source_scope'], $item['environment'], (int) $item['approval_generation'], $item['live_freshness_hash'], $item['live_freshness_at'] ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		self::assertSame( 'ready', $item['status'] );
+		self::assertSame( hash_hmac( 'sha256', $payload, AUTH_KEY . "\0" . SECURE_AUTH_KEY ), $item['live_freshness_token'] );
+		self::assertTrue( $this->permit( $context ) );
+	}
 
 	protected function setUp(): void {
 		$GLOBALS['ea_now']   = '2026-09-28 12:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
@@ -478,7 +535,7 @@ final class ImportRepositoryTest extends TestCase {
 		unset( $item );
 		return array(
 			'version'                => 1,
-			'policy_version'         => '3a-v1',
+			'policy_version'         => ImportPolicy::VERSION,
 			'dry_run_id'             => $dry_run_id,
 			'dry_run_generation'     => 1,
 			'environment'            => $environment,

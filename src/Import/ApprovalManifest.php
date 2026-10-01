@@ -2,6 +2,7 @@
 namespace IdeaXperts\EndlessAisles\Import;
 
 use RuntimeException;
+use IdeaXperts\EndlessAisles\ProductMapping\UpcNormalizer;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -33,25 +34,33 @@ final class ApprovalManifest {
 			if ( 1 > $item_id || ! $decision['eligible'] ) {
 				throw new RuntimeException( 'The selection contains an item that is not eligible for its requested approval mode.' );
 			}
-			$vendor       = array(
+			$classification = (string) ( $item['classification'] ?? '' );
+			$vendor         = array(
 				'ea_product_id'  => (string) ( $item['ea_product_id'] ?? '' ),
 				'ea_option_id'   => (string) ( $item['ea_option_id'] ?? '' ),
 				'normalized_upc' => (string) ( $item['normalized_upc'] ?? '' ),
-				'classification' => (string) ( $item['classification'] ?? '' ),
+				'classification' => $classification,
+				'vendor_sku'     => 'exact_sku_match' === $classification ? UpcNormalizer::normalize( (string) ( $item['normalized_upc'] ?? '' ) ) : '',
 				'review_flags'   => json_decode( (string) ( $item['review_flags'] ?? '[]' ), true ),
 				'retail_price'   => (string) ( $item['retail_price'] ?? '' ),
 				'purchasable'    => (int) ( $item['purchasable'] ?? 0 ),
 				'discontinued'   => (int) ( $item['discontinued'] ?? 0 ),
 			);
-			$local        = array(
-				'wc_product_id'   => (int) ( $item['wc_product_id'] ?? 0 ),
-				'wc_variation_id' => (int) ( $item['wc_variation_id'] ?? 0 ),
-			);
-			$source_scope = 'endless-aisles:' . $environment;
+			$source_scope   = 'endless-aisles:' . $environment;
 			if ( ! $this->catalog_state ) {
 				throw new RuntimeException( 'Live catalog state is required for approval.' );
 			}
-			$live_hash        = $this->catalog_state->fingerprint( $item, $source_scope, $environment );
+			$inspection = $this->catalog_state->inspect( $item, $source_scope, $environment );
+			if ( 'link' === $decision['action'] && (int) ( $item['wc_variation_id'] ?? 0 ) > 0 && ! LiveCatalogStateProvider::valid_variation_parent( $inspection['target'], (int) ( $item['wc_product_id'] ?? 0 ) ) ) {
+				throw new RuntimeException( 'Variation approval requires an existing variable parent.' );
+			}
+			$local            = array(
+				'wc_product_id'     => (int) ( $item['wc_product_id'] ?? 0 ),
+				'wc_variation_id'   => (int) ( $item['wc_variation_id'] ?? 0 ),
+				'approved_state'    => $inspection['target'],
+				'approved_mappings' => $inspection['mappings'],
+			);
+			$live_hash        = $inspection['fingerprint'];
 			$manifest_items[] = array(
 				'dry_run_item_id'       => $item_id,
 				'action'                => $decision['action'],

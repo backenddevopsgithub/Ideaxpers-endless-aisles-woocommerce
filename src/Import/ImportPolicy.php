@@ -6,7 +6,7 @@ use IdeaXperts\EndlessAisles\Catalog\MatchClassifier;
 defined( 'ABSPATH' ) || exit;
 
 final class ImportPolicy {
-	public const VERSION = '3a-v1';
+	public const VERSION = '3b-v1';
 
 	/**
 	 * Derive an action exclusively from the persisted dry-run result.

@@ -14,6 +14,14 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 
 	/** @param array<string,mixed> $item */
 	public function fingerprint( array $item, string $source_scope, string $environment, bool $force_refresh = false ): string {
+		return $this->inspect( $item, $source_scope, $environment, $force_refresh )['fingerprint'];
+	}
+
+	/**
+	 * @param array<string,mixed> $item
+	 * @return array{fingerprint:string,target:array<string,mixed>|null,upc_owners:list<string>,sku_owners:list<string>,mappings:list<array<string,mixed>>}
+	 */
+	public function inspect( array $item, string $source_scope, string $environment, bool $force_refresh = false ): array {
 		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) || 'endless-aisles:' . $environment !== $source_scope ) {
 			throw new \RuntimeException( 'Catalog freshness source is invalid.' );
 		}
@@ -24,8 +32,10 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		$variation_id = (int) ( $item['target_wc_variation_id'] ?? $item['wc_variation_id'] ?? 0 );
 		$target_key   = $product_id . ':' . $variation_id;
 		$upc          = (string) ( $item['normalized_upc'] ?? '' );
+		$sku          = UpcNormalizer::normalize( (string) ( $item['vendor_sku'] ?? ( 'exact_sku_match' === (string) ( $item['classification'] ?? '' ) ? $upc : '' ) ) );
 		$target       = $this->target( $product_id, $variation_id );
-		$owners       = '' === $upc ? array() : $this->upc_owners( $upc );
+		$owners       = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc' );
+		$sku_owners   = '' === $sku ? array() : $this->identifier_owners( $sku, 'sku' );
 		if ( 'production' === $environment ) {
 			foreach ( $owners as $owner ) {
 				if ( $owner !== $target_key ) {
@@ -34,22 +44,29 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 			}
 		}
 		$mappings = $this->mappings(
-			$source_scope,
+			'qa' === $environment ? 'endless-aisles:production' : $source_scope,
 			(string) ( $item['ea_product_id'] ?? '' ),
 			(string) ( $item['ea_option_id'] ?? '' ),
 			$product_id,
 			$variation_id
 		);
-		return ApprovalManifest::hash(
-			array(
-				'version'      => 1,
-				'source_scope' => $source_scope,
-				'environment'  => $environment,
-				'target'       => $target,
-				'upc'          => $upc,
-				'upc_owners'   => $owners,
-				'mappings'     => $mappings,
-			)
+		$payload  = array(
+			'version'      => 3,
+			'source_scope' => $source_scope,
+			'environment'  => $environment,
+			'target'       => $target,
+			'upc'          => $upc,
+			'upc_owners'   => $owners,
+			'sku'          => $sku,
+			'sku_owners'   => $sku_owners,
+			'mappings'     => $mappings,
+		);
+		return array(
+			'fingerprint' => ApprovalManifest::hash( $payload ),
+			'target'      => $target,
+			'upc_owners'  => $owners,
+			'sku_owners'  => $sku_owners,
+			'mappings'    => $mappings,
 		);
 	}
 
@@ -65,11 +82,30 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 			return null;
 		}
 		$parent_id = $variation_id > 0 && method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
-		return $this->capture( $product, $parent_id );
+		$target    = $this->capture( $product, $parent_id );
+		if ( null !== $target && $variation_id > 0 ) {
+			// Load only the parent, never its child collection.
+			// @phpstan-ignore-next-line WooCommerce is checked before services boot.
+			$parent           = $parent_id > 0 ? \wc_get_product( $parent_id ) : false;
+			$target['parent'] = is_object( $parent ) && method_exists( $parent, 'get_id' ) && method_exists( $parent, 'get_type' ) && method_exists( $parent, 'get_status' ) ? array(
+				'id'     => (int) $parent->get_id(),
+				'type'   => (string) $parent->get_type(),
+				'status' => (string) $parent->get_status(),
+			) : null;
+		}
+		return $target;
+	}
+
+	/** @param array<string,mixed>|null $target */
+	public static function valid_variation_parent( ?array $target, int $approved_parent_id ): bool {
+		$parent = $target['parent'] ?? null;
+		return $approved_parent_id > 0 && is_array( $parent ) && (int) ( $target['parent_product_id'] ?? 0 ) === $approved_parent_id
+			&& (int) ( $parent['id'] ?? 0 ) === $approved_parent_id && 'variable' === ( $parent['type'] ?? '' )
+			&& in_array( $parent['status'] ?? '', array( 'publish', 'private', 'draft', 'pending', 'future' ), true );
 	}
 
 	/** @return list<string> */
-	private function upc_owners( string $upc ): array {
+	private function identifier_owners( string $identifier, string $kind ): array {
 		$owners = array();
 		// Products and variations are separate bounded queries so one variable
 		// product cannot materialize its complete child-ID collection.
@@ -94,7 +130,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 				foreach ( $products as $product ) {
 					if ( is_object( $product ) ) {
 						$parent_id = method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
-						$this->record_owner( $owners, $product, $parent_id, $upc );
+						$this->record_owner( $owners, $product, $parent_id, $identifier, $kind );
 					}
 				}
 				if ( $page >= $pages ) {
@@ -108,9 +144,10 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 	}
 
 	/** @param array<string,true> $owners */
-	private function record_owner( array &$owners, object $product, int $parent_id, string $upc ): void {
+	private function record_owner( array &$owners, object $product, int $parent_id, string $identifier, string $kind ): void {
 		$captured = $this->capture( $product, $parent_id );
-		if ( null !== $captured && in_array( $upc, $captured['upcs'], true ) ) {
+		$matches  = null !== $captured && ( 'upc' === $kind ? in_array( $identifier, $captured['upcs'], true ) : hash_equals( (string) $captured['normalized_sku'], UpcNormalizer::normalize( $identifier ) ) );
+		if ( $matches ) {
 			$owners[ $captured['wc_product_id'] . ':' . $captured['wc_variation_id'] ] = true;
 		}
 	}
@@ -138,6 +175,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 			'product_status'    => (string) $product->get_status(),
 			'parent_product_id' => $parent_id,
 			'sku'               => 'yes' === $this->settings->get( 'allow_sku_upc_match', 'no' ) ? (string) $product->get_sku() : '',
+			'normalized_sku'    => 'yes' === $this->settings->get( 'allow_sku_upc_match', 'no' ) ? UpcNormalizer::normalize( (string) $product->get_sku() ) : '',
 			'upcs'              => $upcs,
 		);
 	}

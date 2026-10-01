@@ -23,11 +23,11 @@ final class LiveCatalogStateProviderTest extends TestCase {
 		$GLOBALS['ea_wc_product_map']                         = array();
 		$GLOBALS['ea_wc_pages']                               = array();
 		$GLOBALS['ea_wc_reads']                               = array();
-		$target                                                = new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '001234567890', 'SKU-1' );
-		$GLOBALS['ea_wc_products']                            = array( $target );
-		$GLOBALS['ea_wc_product_map'][5]                      = $target;
-		$this->provider                                       = new LiveCatalogStateProvider( new SettingsRepository() );
-		$this->item = array(
+		$target                          = new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '001234567890', 'SKU-1' );
+		$GLOBALS['ea_wc_products']       = array( $target );
+		$GLOBALS['ea_wc_product_map'][5] = $target;
+		$this->provider                  = new LiveCatalogStateProvider( new SettingsRepository() );
+		$this->item                      = array(
 			'ea_product_id'          => 'p1',
 			'ea_option_id'           => 'o1',
 			'normalized_upc'         => '009999999999',
@@ -140,6 +140,39 @@ final class LiveCatalogStateProviderTest extends TestCase {
 		$this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
 		$pages = array_map( static fn( array $read ): int => (int) $read[1]['page'], array_values( array_filter( $GLOBALS['ea_wc_reads'], static fn( array $read ): bool => 'wc_get_products' === $read[0] ) ) );
 		self::assertSame( array( 1, 2, 1, 2 ), $pages );
+	}
+
+	public function test_exact_sku_inspection_returns_every_matching_owner(): void {
+		$this->item['classification'] = 'exact_sku_match';
+		$this->item['normalized_upc'] = 'SKU-1';
+		$GLOBALS['ea_wc_pages']       = array(
+			1 => array( new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '', 'SKU-1' ) ),
+			2 => array( new ReadOnlyProduct( 8, 'simple', 'publish', 'Duplicate', '', 'SKU-1' ) ),
+		);
+		$state                        = $this->provider->inspect( $this->item, 'endless-aisles:qa', 'qa', true );
+
+		self::assertSame( array( '5:0', '8:0' ), $state['sku_owners'] );
+		self::assertSame( 5, $state['target']['wc_product_id'] );
+	}
+
+	public function test_bugbot_normalized_sku_owners_across_pages(): void {
+		$this->item['vendor_sku'] = '001234567890';
+		$GLOBALS['ea_wc_pages'] = array(
+			1 => array( new ReadOnlyProduct( 5, 'simple', 'publish', 'Target', '', '001234567890' ) ),
+			2 => array( new ReadOnlyProduct( 8, 'simple', 'publish', 'Duplicate', '', '001-234-567-890' ) ),
+		);
+		$state = $this->provider->inspect( $this->item, 'endless-aisles:qa', 'qa', true );
+		self::assertSame( array( '5:0', '8:0' ), $state['sku_owners'] );
+	}
+
+	public function test_bugbot_same_parent_id_deleted_changes_fingerprint(): void {
+		$this->item['target_wc_variation_id'] = 11;
+		$GLOBALS['ea_wc_product_map'][11] = new ReadOnlyProduct( 11, 'variation', 'publish', 'Child', '', '', array(), array(), 5 );
+		$GLOBALS['ea_wc_product_map'][5] = new ReadOnlyProduct( 5, 'variable', 'publish', 'Parent', '', '' );
+		$before = $this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
+		unset( $GLOBALS['ea_wc_product_map'][5] );
+		$after = $this->provider->fingerprint( $this->item, 'endless-aisles:qa', 'qa', true );
+		self::assertNotSame( $before, $after );
 	}
 
 	/** @dataProvider mappingMutations */

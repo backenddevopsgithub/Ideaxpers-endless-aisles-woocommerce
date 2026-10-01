@@ -117,7 +117,7 @@ final class ImportManager {
 			return;
 		}
 		$item_id = (int) $action['import_item_id'];
-		if ( $this->imports->settle_action_for_item( $action_id, $logical_key, $execution ) ) {
+		if ( $this->imports->settle_action_for_item( $action_id, $logical_key, $execution, false ) ) {
 			return;
 		}
 		$token = $this->imports->claim_item( $item_id );
@@ -128,16 +128,37 @@ final class ImportManager {
 		$identity_id = $this->imports->reserve_catalog_identity( $item_id, $token );
 		$item        = $this->imports->item( $item_id );
 		if ( $identity_id < 1 || ! $item || ( '' !== (string) $item['normalized_upc'] && $this->imports->reserve_upc( $identity_id, $item_id, $token ) < 1 ) ) {
-			$this->imports->block_item( $item_id, $token, 'reservation_conflict' );
+			if ( ! $this->imports->defer_preview_reservation( $item_id, $token ) ) {
+				$this->imports->block_item( $item_id, $token, 'reservation_conflict' );
+			}
 			$this->imports->settle_action_for_item( $action_id, $logical_key, $execution );
 			return;
 		}
 		if ( ! $this->imports->accept_freshness( $item_id, $token ) ) {
-			$this->imports->reject_stale( $item_id, $token );
+			$configuration_error = $this->imports->freshness_signing_configuration_error();
+			if ( '' !== $configuration_error ) {
+				$this->imports->block_item( $item_id, $token, $configuration_error );
+			} else {
+				$this->imports->reject_stale( $item_id, $token );
+			}
 			$this->imports->settle_action_for_item( $action_id, $logical_key, $execution );
 			return;
 		}
-		// Milestone 3A deliberately stops at ready. No catalog writer is registered.
+		$item = $this->imports->item( $item_id );
+		if ( $item && 'link' === (string) $item['approved_action'] ) {
+			$this->imports->finalize_existing_link(
+				$item_id,
+				$identity_id,
+				$token,
+				(int) $item['approval_generation'],
+				$action_id,
+				$logical_key,
+				$generation,
+				$execution
+			);
+			return;
+		}
+		// Creation remains validation-only. Milestone 3B writes plugin-owned links only.
 		$this->imports->complete_action_execution( $action_id, $logical_key, $execution );
 	}
 

@@ -22,16 +22,18 @@ final class CatalogImportAdmin {
 
 	public function prepare(): void {
 		$this->authorize( 'ideaxperts_ea_prepare_import' );
-		$run_id = isset( $_POST['dry_run_id'] ) ? absint( $_POST['dry_run_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- authorize() verified the action-specific nonce above.
-		$ids    = isset( $_POST['item_ids'] ) && is_array( $_POST['item_ids'] ) ? array_map( 'absint', wp_unslash( $_POST['item_ids'] ) ) : array(); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- authorize() verified the nonce; absint allowlists IDs.
-		$run    = $this->dry_runs->run( $run_id );
-		$items  = $this->dry_runs->items_by_ids( $run_id, $ids );
+		$run_id        = isset( $_POST['dry_run_id'] ) ? absint( $_POST['dry_run_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- authorize() verified the action-specific nonce above.
+		$automatic_ids = isset( $_POST['item_ids'] ) && is_array( $_POST['item_ids'] ) ? array_map( 'absint', wp_unslash( $_POST['item_ids'] ) ) : array(); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- authorize() verified the nonce; absint allowlists IDs.
+		$manual_ids    = isset( $_POST['manual_item_ids'] ) && is_array( $_POST['manual_item_ids'] ) ? array_map( 'absint', wp_unslash( $_POST['manual_item_ids'] ) ) : array(); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- authorize() verified the nonce; absint allowlists IDs.
+		$ids           = array_values( array_unique( array_merge( $automatic_ids, $manual_ids ) ) );
+		$run           = $this->dry_runs->run( $run_id );
+		$items         = $this->dry_runs->items_by_ids( $run_id, $ids );
 		if ( ! $run || count( $items ) !== count( array_unique( array_filter( $ids ) ) ) ) {
 			wp_die( esc_html__( 'The import selection is invalid or stale.', 'ideaxperts-endless-aisles' ) );
 		}
 		$settings = $this->matching_settings();
 		try {
-			$built = $this->manifests->build( $run, $items, array(), $this->imports->next_approval_generation( $run_id ), $settings );
+			$built = $this->manifests->build( $run, $items, array_fill_keys( $manual_ids, true ), $this->imports->next_approval_generation( $run_id ), $settings );
 		} catch ( \RuntimeException ) {
 			wp_die( esc_html__( 'The import selection contains an ineligible or stale item.', 'ideaxperts-endless-aisles' ) );
 		}
@@ -74,7 +76,13 @@ final class CatalogImportAdmin {
 			wp_die( esc_html__( 'The approved dry-run data is no longer available.', 'ideaxperts-endless-aisles' ) );
 		}
 		try {
-			$current = $this->manifests->build( $dry_run, $items, array(), (int) $manifest['approval_generation'], $settings );
+			$manual = array();
+			foreach ( $manifest_items as $manifest_item ) {
+				if ( is_array( $manifest_item ) && 'link' === (string) ( $manifest_item['action'] ?? '' ) ) {
+					$manual[ (int) $manifest_item['dry_run_item_id'] ] = true;
+				}
+			}
+			$current = $this->manifests->build( $dry_run, $items, $manual, (int) $manifest['approval_generation'], $settings );
 		} catch ( \RuntimeException ) {
 			wp_die( esc_html__( 'The approved dry-run data is no longer eligible.', 'ideaxperts-endless-aisles' ) );
 		}
@@ -108,14 +116,27 @@ final class CatalogImportAdmin {
 		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
 		$run   = $wpdb->get_row( "SELECT * FROM {$table} WHERE environment IN ('qa','production') AND status = 'completed' ORDER BY id DESC LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( is_array( $run ) ) {
-			echo '<h2>' . esc_html__( 'Catalog import foundation', 'ideaxperts-endless-aisles' ) . '</h2>';
-			echo '<p><strong>' . esc_html( strtoupper( (string) $run['environment'] ) ) . '</strong> — ' . esc_html__( 'Production catalog writes remain disabled in Milestone 3A.', 'ideaxperts-endless-aisles' ) . '</p>';
+			echo '<h2>' . esc_html__( 'Existing-product linking', 'ideaxperts-endless-aisles' ) . '</h2>';
+			$description = 'qa' === $run['environment'] ? __( 'Approved existing products are previewed in plugin-owned import state. WooCommerce product content is not changed.', 'ideaxperts-endless-aisles' ) : __( 'Approved existing products are linked in authoritative plugin-owned mappings. WooCommerce product content is not changed.', 'ideaxperts-endless-aisles' );
+			echo '<p><strong>' . esc_html( strtoupper( (string) $run['environment'] ) ) . '</strong> — ' . esc_html( $description ) . '</p>';
+			$this->render_preview_notice( (string) $run['environment'] );
 			echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="ideaxperts_ea_prepare_import"><input type="hidden" name="dry_run_id" value="' . esc_attr( (string) $run['id'] ) . '">';
 			wp_nonce_field( 'ideaxperts_ea_prepare_import' );
-			echo '<table class="widefat striped"><thead><tr><th></th><th>Vendor identity</th><th>Classification</th><th>Eligibility</th></tr></thead><tbody>';
+			echo '<table class="widefat striped"><thead><tr><th>Approve</th><th>Vendor identity</th><th>Match source</th><th>WooCommerce target</th><th>Eligibility</th></tr></thead><tbody>';
 			foreach ( $this->dry_runs->items( (int) $run['id'], '', '', 1, 100 ) as $item ) {
 				$decision = $this->policy->evaluate( $item );
-				echo '<tr><td>' . ( $decision['automatic'] ? '<input type="checkbox" name="item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '">' : '&mdash;' ) . '</td><td>' . esc_html( $item['ea_product_id'] . ' / ' . $item['ea_option_id'] ) . '</td><td>' . esc_html( $item['classification'] ) . '</td><td>' . esc_html( $decision['automatic'] ? $decision['action'] : $decision['reason'] ) . '</td></tr>';
+				$manual   = $this->policy->evaluate( $item, true );
+				$is_link  = $manual['eligible'] && 'link' === $manual['action'];
+				$target   = (int) $item['wc_variation_id'] > 0 ? 'Variation #' . (int) $item['wc_variation_id'] . ' (parent #' . (int) $item['wc_product_id'] . ')' : 'Product #' . (int) $item['wc_product_id'];
+				echo '<tr><td>';
+				if ( $is_link ) {
+					echo '<label><input type="checkbox" name="manual_item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '"> ' . esc_html( 'qa' === $run['environment'] ? __( 'Explicitly approve preview link', 'ideaxperts-endless-aisles' ) : __( 'Explicitly approve link', 'ideaxperts-endless-aisles' ) ) . '</label>';
+				} elseif ( $decision['automatic'] ) {
+					echo '<input type="checkbox" name="item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '">';
+				} else {
+					echo '&mdash;';
+				}
+				echo '</td><td>' . esc_html( $item['ea_product_id'] . ' / ' . $item['ea_option_id'] ) . '</td><td>' . esc_html( (string) $item['classification'] ) . '</td><td>' . esc_html( $target ) . '</td><td>' . esc_html( $is_link ? 'Link only; merchant content remains unchanged.' : ( $decision['automatic'] ? $decision['action'] : $decision['reason'] ) ) . '</td></tr>';
 			}
 			echo '</tbody></table>';
 			submit_button( __( 'Review selected import actions', 'ideaxperts-endless-aisles' ), 'secondary' );
@@ -123,6 +144,7 @@ final class CatalogImportAdmin {
 		}
 		$latest = $this->imports->latest_run();
 		if ( $latest ) {
+			$this->render_preview_notice( (string) $latest['environment'] );
 			$counts = $this->imports->item_status_counts( (int) $latest['id'] );
 			$manual = (int) ( $counts['manual_required'] ?? 0 ) + (int) ( $counts['manual_recovery'] ?? 0 );
 			$failed = (int) ( $counts['blocked'] ?? 0 ) + (int) ( $counts['stale_snapshot'] ?? 0 );
@@ -146,11 +168,19 @@ final class CatalogImportAdmin {
 		if ( ! is_array( $built ) || ! isset( $built['manifest']['items'] ) ) {
 			return;
 		}
-		echo '<div class="notice notice-warning inline"><p>' . esc_html( sprintf( 'Confirm %d immutable import actions. Milestone 3A performs validation only and cannot write products.', count( $built['manifest']['items'] ) ) ) . '</p></div>';
+		$description = 'qa' === ( $built['manifest']['environment'] ?? '' ) ? 'Confirm %d immutable preview actions. Existing matches record preview results only; WooCommerce product content is not changed.' : 'Confirm %d immutable import actions. Existing matches create authoritative plugin-owned links only; WooCommerce product content is not changed.';
+		echo '<div class="notice notice-warning inline"><p>' . esc_html( sprintf( $description, count( $built['manifest']['items'] ) ) ) . '</p></div>';
+		$this->render_preview_notice( (string) ( $built['manifest']['environment'] ?? '' ) );
 		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="ideaxperts_ea_confirm_import"><input type="hidden" name="confirmation_token" value="' . esc_attr( $token ) . '">';
 		wp_nonce_field( 'ideaxperts_ea_confirm_import_' . $token );
-		submit_button( __( 'Confirm and queue validation', 'ideaxperts-endless-aisles' ), 'primary' );
+		submit_button( __( 'Confirm and queue approved links', 'ideaxperts-endless-aisles' ), 'primary' );
 		echo '</form>';
+	}
+
+	private function render_preview_notice( string $environment ): void {
+		if ( 'qa' === $environment ) {
+			echo '<p><strong>' . esc_html__( 'Preview only', 'ideaxperts-endless-aisles' ) . '</strong> — ' . esc_html__( 'No authoritative catalog mapping will be created. Production ownership will not be claimed. Applied means preview link succeeded.', 'ideaxperts-endless-aisles' ) . '</p>';
+		}
 	}
 
 	private function authorize( string $nonce ): void {

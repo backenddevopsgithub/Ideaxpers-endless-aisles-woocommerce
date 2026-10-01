@@ -1,6 +1,6 @@
 # IdeaXperts Endless Aisles for WooCommerce
 
-Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 3A adds the durable, write-safe import workflow foundation, but intentionally stops before any WooCommerce product mutation. It does **not** import or modify products, synchronize inventory, or submit orders.
+Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 3B can explicitly link an approved exact UPC or exact SKU match to an existing simple product or variation using plugin-owned tables. It does **not** create or modify WooCommerce products, synchronize inventory, or submit orders.
 
 ## Requirements
 
@@ -23,9 +23,17 @@ The **Catalog Dry Run** tab always shows local catalog counts and identifier-fie
 
 Matching identity is: verified existing mapping, one exact normalized UPC, an exact normalized SKU only when enabled, a new-product candidate, or manual review. Titles, descriptions, brands, and prices are never used for identity. Review flags record discontinued, not-purchasable, duplicate, invalid, conflict, ambiguous, and suspicious-price conditions without replacing `already_linked`. Results retain the vendor product-to-options relationship and can be filtered, searched, and exported from a completed run. CSV cells with leading whitespace, control characters, or spreadsheet formula characters are neutralized. No WooCommerce records are changed.
 
-## Catalog import foundation
+## Existing-product linking
 
-Administrators can prepare an immutable approval manifest from a completed QA or Production dry run, confirm it through an expiring server-side token, and queue only automatically eligible actions. Import jobs compare an approval fingerprint with read-only current WooCommerce identifier/target state and scoped mappings, reserve source-scoped catalog identities and UPCs, and stop at `ready`; the final write permit repeats that live check using bounded server-authenticated evidence. QA reservations use a preview namespace, while Production UPC ownership is store-wide. The durable outbox is resumable, generation-fenced, and reconciles missing Action Scheduler jobs. No WooCommerce create, update, image, inventory, or mapping write is performed in Milestone 3A.
+Administrators can prepare an immutable approval manifest from a completed QA or Production dry run. Existing exact UPC and exact SKU candidates require an explicit per-item checkbox and a second confirmation through an expiring server-side token. The server rebuilds the manifest from persisted dry-run rows; browser-supplied action and target values are never authoritative.
+
+Link workers re-read the exact target and bounded UPC/SKU owner sets, verify the approved type, parent, identifiers, mapping state, freshness evidence, reservations, and current action execution. Production then atomically creates or adopts the authoritative plugin-owned mapping. QA instead records a preview-only successful result: no mapping row, global WooCommerce identity key, or Production ownership is created. Both settle the item to `applied` and count success exactly once. For QA, `applied` means **preview link succeeded**. A later Production approval uses its own target and authoritative state, independently of QA preview history.
+
+QA can observe an exact Production mapping as read-only context and successfully preview it without modifying or adopting its ownership. Conflicting authoritative mappings still require manual review. QA preview history is retained in immutable manifests, import items, operation references, and audit events, never used to classify a real mapping as `already_linked`. Administrator selection, confirmation, and run summaries label QA as **Preview only**.
+
+QA identity and UPC reservations protect active work, including retries and crash recovery. Settled previews release their reservations atomically; a later independent QA approval can reuse them. Active contention waits for a retry. Cancellation releases reservations only after authoritative settlement; ambiguous applying/reconciling/manual-recovery work retains them. Production ownership remains durable. All import audit JSON uses one deterministic allowlist and a 4,000-byte budget, with compact target references and canonical hashes instead of full mapping rows.
+
+The existing product remains merchant-owned: titles, descriptions, identifiers, prices, stock, status, taxonomy, shipping data, dimensions, and media are untouched. Product/variation creation, images, inventory synchronization, shipping, and order submission remain disabled.
 
 ## Development
 

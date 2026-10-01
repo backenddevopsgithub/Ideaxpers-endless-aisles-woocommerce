@@ -22,9 +22,14 @@ final class DryRunMemoryWpdb {
 	public int $fail_import_event_insert_after  = -1;
 	public int $import_event_insert_calls       = 0;
 	public string $fail_import_event_type       = '';
+	public string $fail_insert_table_contains   = '';
+	public string $fail_update_table_contains   = '';
+	public string $fail_release_table_contains = '';
 	private int $replace_calls                  = 0;
 	/** @var callable|null */
 	public $after_lock_insert = null;
+	/** @var callable|null */
+	public $before_mapping_lock = null;
 	/** @var array<string,list<array<string,mixed>>> */
 	public array $tables = array();
 
@@ -48,7 +53,8 @@ final class DryRunMemoryWpdb {
 
 	/** @param array<string,mixed> $data @param list<string>|null $formats */
 	public function insert( string $table, array $data, ?array $formats = null ): int|false {
-		if ( 'insert' === $this->fail_operation ) {
+		if ( 'insert' === $this->fail_operation || ( '' !== $this->fail_insert_table_contains && str_contains( $table, $this->fail_insert_table_contains ) ) ) {
+			$this->fail_insert_table_contains = '';
 			return false;
 		}
 		if ( str_contains( $table, 'import_actions' ) ) {
@@ -79,12 +85,14 @@ final class DryRunMemoryWpdb {
 			}
 		}
 		$unique_sets = array();
-		if ( str_contains( $table, 'import_runs' ) ) {
+		if ( str_contains( $table, 'ideaxperts_ea_mappings' ) ) {
+			$unique_sets = array( array( 'source_scope', 'ea_product_id', 'ea_option_id' ), array( 'wc_product_id', 'wc_variation_id' ) );
+		} elseif ( str_contains( $table, 'import_runs' ) ) {
 			$unique_sets = array( array( 'dry_run_id', 'approval_generation' ) );
 		} elseif ( str_contains( $table, 'import_items' ) ) {
 			$unique_sets = array( array( 'import_run_id', 'entity_kind', 'ea_product_id', 'ea_option_id' ), array( 'import_run_id', 'dry_run_item_id' ), array( 'operation_uuid' ) );
 		} elseif ( str_contains( $table, 'catalog_identities' ) ) {
-			$unique_sets = array( array( 'identity_key' ), array( 'source_scope', 'entity_kind', 'ea_product_id', 'ea_option_id' ), array( 'operation_uuid' ) );
+			$unique_sets = array( array( 'identity_key' ), array( 'source_scope', 'entity_kind', 'ea_product_id', 'ea_option_id' ), array( 'operation_uuid' ), array( 'wc_identity_key' ) );
 		} elseif ( str_contains( $table, 'store_identifier_reservations' ) ) {
 			$unique_sets = array( array( 'identifier_key' ), array( 'namespace', 'identifier_type', 'normalized_identifier' ) );
 		} elseif ( str_contains( $table, 'import_actions' ) ) {
@@ -94,6 +102,10 @@ final class DryRunMemoryWpdb {
 		}
 		foreach ( $this->tables[ $table ] ?? array() as $row ) {
 			foreach ( $unique_sets as $keys ) {
+				// MySQL UNIQUE indexes permit multiple NULL values.
+				if ( array( 'wc_identity_key' ) === $keys && ( null === ( $row['wc_identity_key'] ?? null ) || null === ( $data['wc_identity_key'] ?? null ) ) ) {
+					continue;
+				}
 				$same = true;
 				foreach ( $keys as $key ) {
 					if ( (string) ( $row[ $key ] ?? '' ) !== (string) ( $data[ $key ] ?? '' ) ) {
@@ -142,7 +154,12 @@ final class DryRunMemoryWpdb {
 
 	/** @param array<string,mixed> $data @param array<string,mixed> $where */
 	public function update( string $table, array $data, array $where, mixed $format = null, mixed $where_format = null ): int|false {
-		if ( 'update' === $this->fail_operation ) {
+		if ( 'released' === ( $data['reservation_status'] ?? '' ) && '' !== $this->fail_release_table_contains && str_contains( $table, $this->fail_release_table_contains ) ) {
+			$this->fail_release_table_contains = '';
+			return false;
+		}
+		if ( 'update' === $this->fail_operation || ( '' !== $this->fail_update_table_contains && str_contains( $table, $this->fail_update_table_contains ) ) ) {
+			$this->fail_update_table_contains = '';
 			return false;
 		}
 		if ( '' !== $this->fail_query_contains && 'action_scheduler_id' === $this->fail_query_contains && array_key_exists( 'action_scheduler_id', $data ) ) {
@@ -153,6 +170,14 @@ final class DryRunMemoryWpdb {
 		foreach ( $this->tables[ $table ] as $index => $row ) {
 			if ( ! $this->matches_array( $row, $where ) ) {
 				continue;
+			}
+			if ( str_contains( $table, 'catalog_identities' ) && null !== ( $data['wc_identity_key'] ?? null ) ) {
+				foreach ( $this->tables[ $table ] as $other ) {
+					if ( (int) $other['id'] !== (int) $row['id'] && ( $other['wc_identity_key'] ?? null ) === $data['wc_identity_key'] ) {
+						$this->last_error = 'Duplicate entry';
+						return false;
+					}
+				}
 			}
 			$this->tables[ $table ][ $index ] = array_merge( $row, $data );
 			++$count;
@@ -346,6 +371,7 @@ final class DryRunMemoryWpdb {
 
 	/** @return array<string,mixed>|null */
 	public function get_row( string $sql, mixed $output = null ): ?array {
+		$this->queries[] = $sql;
 		$this->last_error = '';
 		if ( $this->should_fail_read( $sql ) ) {
 			$this->last_error = 'Injected read failure.';
@@ -357,6 +383,11 @@ final class DryRunMemoryWpdb {
 
 	/** @return list<array<string,mixed>> */
 	public function get_results( string $sql, mixed $output = null ): array {
+		if ( str_contains( $sql, 'ideaxperts_ea_mappings' ) && str_contains( $sql, 'FOR UPDATE' ) && is_callable( $this->before_mapping_lock ) ) {
+			$callback = $this->before_mapping_lock;
+			$this->before_mapping_lock = null;
+			$callback();
+		}
 		$this->last_error = '';
 		if ( $this->should_fail_read( $sql ) ) {
 			$this->last_error = 'Injected read failure.';

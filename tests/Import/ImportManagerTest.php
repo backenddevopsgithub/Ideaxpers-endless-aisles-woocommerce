@@ -4,9 +4,12 @@ namespace IdeaXperts\EndlessAisles\Tests\Import;
 use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Import\ApprovalManifest;
 use IdeaXperts\EndlessAisles\Import\ImportManager;
+use IdeaXperts\EndlessAisles\Import\ImportPolicy;
 use IdeaXperts\EndlessAisles\Tests\Support\DryRunMemoryWpdb;
 use IdeaXperts\EndlessAisles\Tests\Support\FixedCatalogStateProvider;
 use PHPUnit\Framework\TestCase;
+
+require_once dirname( __DIR__ ) . '/Support/SigningKeyConstants.php';
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Test fixture globals are shared by bootstrap fakes.
 final class ImportManagerTest extends TestCase {
@@ -14,6 +17,33 @@ final class ImportManagerTest extends TestCase {
 	private ImportRepository $imports;
 	private ImportManager $manager;
 	private FixedCatalogStateProvider $catalog_state;
+
+	public function test_invalid_signing_configuration_reports_bounded_error_without_secret_output(): void {
+		$run_id = $this->create_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$invalid = str_repeat( 'sensitive-fixture', 4 );
+		\IdeaXperts\EndlessAisles\Tests\Support\SigningKeyConstants::$values = array( 'AUTH_KEY' => $invalid, 'SECURE_AUTH_KEY' => SECURE_AUTH_KEY );
+		ob_start();
+		try {
+			$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+			$output = ob_get_contents();
+		} finally {
+			ob_end_clean();
+			\IdeaXperts\EndlessAisles\Tests\Support\SigningKeyConstants::$values = null;
+		}
+		$item = $this->imports->items( $run_id )[0];
+		self::assertSame( 'blocked', $item['status'] );
+		self::assertSame( 'wordpress_signing_keys_invalid', $item['failure_code'] );
+		self::assertSame( '', $item['live_freshness_token'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( '', $output );
+		$observable = $output . wp_json_encode( array( $this->wpdb->tables, $this->wpdb->queries, $this->wpdb->last_error ) );
+		foreach ( array( $invalid, AUTH_KEY, SECURE_AUTH_KEY ) as $secret ) {
+			self::assertStringNotContainsString( $secret, $observable );
+		}
+		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+	}
 
 	protected function setUp(): void {
 		$GLOBALS['ea_now']             = '2026-09-28 12:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Shared test clock.
@@ -42,6 +72,253 @@ final class ImportManagerTest extends TestCase {
 		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
 		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
 		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+	}
+
+	/** @dataProvider existingLinkCases */
+	public function test_explicit_existing_match_links_without_merchant_mutation( string $classification, bool $variation ): void {
+		$run_id = $this->create_link_run( $classification, $variation );
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+
+		$item = $this->imports->items( $run_id )[0];
+		self::assertSame( 'applied', $item['status'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		self::assertSame( $variation ? 51 : 0, (int) $this->wpdb->tables['wp_ideaxperts_ea_mappings'][0]['wc_variation_id'] );
+		self::assertSame( 'linked', $this->wpdb->tables['wp_ideaxperts_ea_catalog_identities'][0]['reservation_status'] );
+		self::assertSame( 'linked_existing', $this->wpdb->tables['wp_ideaxperts_ea_catalog_identities'][0]['ownership_mode'] );
+		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+		self::assertCount( 1, array_filter( $this->wpdb->tables['wp_ideaxperts_ea_import_events'], static fn( array $event ): bool => 'existing_link_applied' === $event['event_type'] ) );
+	}
+
+	/** @return array<string,array{string,bool}> */
+	public static function existingLinkCases(): array {
+		return array(
+			'exact UPC simple'    => array( 'exact_upc_match', false ),
+			'exact SKU simple'    => array( 'exact_sku_match', false ),
+			'exact UPC variation' => array( 'exact_upc_match', true ),
+			'exact SKU variation' => array( 'exact_sku_match', true ),
+		);
+	}
+
+	/** @dataProvider staleLinkMutations */
+	public function test_changed_existing_target_settles_stale_without_mapping( callable $mutate ): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$mutate( $this->catalog_state );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+
+		self::assertSame( 'stale_snapshot', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+	}
+
+	/** @return array<string,array{callable(FixedCatalogStateProvider):void}> */
+	public static function staleLinkMutations(): array {
+		return array(
+			'target deleted'      => array(
+				static function ( FixedCatalogStateProvider $state ): void {
+										$state->target = null; },
+			),
+			'UPC changed'         => array(
+				static function ( FixedCatalogStateProvider $state ): void {
+										$state->target['upcs'] = array( '009999999999' ); },
+			),
+			'type changed'        => array(
+				static function ( FixedCatalogStateProvider $state ): void {
+										$state->target['product_type'] = 'variable'; },
+			),
+			'duplicate UPC owner' => array(
+				static function ( FixedCatalogStateProvider $state ): void {
+										$state->upc_owners[] = '99:0'; },
+			),
+		);
+	}
+
+	public function test_sku_change_duplicate_or_upc_mismatch_blocks_link(): void {
+		foreach ( array( 'sku', 'duplicate', 'upc' ) as $case ) {
+			$this->setUp();
+			$run_id = $this->create_link_run( 'exact_sku_match' );
+			self::assertTrue( $this->manager->queue( $run_id ) );
+			if ( 'sku' === $case ) {
+				$this->catalog_state->target['sku'] = 'CHANGED';
+			} elseif ( 'duplicate' === $case ) {
+				$this->catalog_state->sku_owners[] = '99:0';
+			} else {
+				$this->catalog_state->target['upcs'] = array( '009999999999' );
+			}
+			$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+			$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+			self::assertSame( 'stale_snapshot', $this->imports->items( $run_id )[0]['status'] );
+			self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		}
+	}
+
+	public function test_variation_parent_change_blocks_link(): void {
+		$run_id = $this->create_link_run( 'exact_upc_match', true );
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$this->catalog_state->target['parent_product_id'] = 99;
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+
+		self::assertSame( 'stale_snapshot', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+	}
+
+	/** @dataProvider atomicLinkFailures */
+	public function test_link_transaction_failure_leaves_no_partial_mapping( string $failure ): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		if ( 'mapping' === $failure ) {
+			$this->wpdb->fail_insert_table_contains = 'ideaxperts_ea_mappings';
+		} elseif ( 'audit' === $failure ) {
+			$this->wpdb->fail_import_event_type = 'existing_link_applied';
+		} else {
+			$this->catalog_state->on_inspect = function () use ( $failure ): void {
+				$this->wpdb->fail_update_table_contains = 'item' === $failure ? 'import_items' : 'import_actions';
+			};
+		}
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		self::assertSame( 'ready', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'running', $this->imports->action( (int) $action['id'] )['status'] );
+		self::assertSame( 'reserved', $this->wpdb->tables['wp_ideaxperts_ea_catalog_identities'][0]['reservation_status'] );
+	}
+
+	/** @return array<string,array{string}> */
+	public static function atomicLinkFailures(): array {
+		return array(
+			'mapping insert'    => array( 'mapping' ),
+			'audit insert'      => array( 'audit' ),
+			'item transition'   => array( 'item' ),
+			'action completion' => array( 'action' ),
+		);
+	}
+
+	public function test_mapping_conflict_is_manual_and_exact_preexisting_mapping_is_adopted(): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$item  = $this->imports->items( $run_id )[0];
+		$exact = $this->mapping_row( $item );
+		$this->wpdb->tables['wp_ideaxperts_ea_mappings'][] = array_merge( $exact, array( 'id' => 900 ) );
+		$this->catalog_state->mappings                     = array( $exact );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertSame( 'applied', $this->imports->items( $run_id )[0]['status'] );
+		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+
+		$this->setUp();
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$item = $this->imports->items( $run_id )[0];
+		$this->wpdb->tables['wp_ideaxperts_ea_mappings'][] = array_merge(
+			$this->mapping_row( $item ),
+			array(
+				'id'            => 901,
+				'ea_product_id' => 'other',
+			)
+		);
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertSame( 'manual_required', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+	}
+
+	/** @dataProvider conflictingMappingMutations */
+	public function test_ea_target_scope_and_option_mapping_conflicts_fail_closed( callable $mutate ): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$item = $this->imports->items( $run_id )[0];
+		$row  = $this->mapping_row( $item );
+		$mutate( $row );
+		$this->wpdb->tables['wp_ideaxperts_ea_mappings'][] = array_merge( $row, array( 'id' => 950 ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+
+		self::assertSame( 'manual_required', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+	}
+
+	/** @return array<string,array{callable(array<string,mixed>&):void}> */
+	public static function conflictingMappingMutations(): array {
+		return array(
+			'EA identity elsewhere' => array(
+				static function ( array &$row ): void {
+										$row['wc_product_id'] = 88; },
+			),
+			'Woo target other EA'   => array(
+				static function ( array &$row ): void {
+										$row['ea_product_id'] = 'other'; },
+			),
+			'wrong source scope'    => array(
+				static function ( array &$row ): void {
+										$row['source_scope'] = 'endless-aisles:qa'; },
+			),
+			'conflicting option'    => array(
+				static function ( array &$row ): void {
+										$row['ea_option_id'] = 'other-option'; },
+			),
+		);
+	}
+
+	public function test_mapping_deleted_or_redirected_after_approval_requires_manual_review(): void {
+		foreach ( array( 'deleted', 'redirected' ) as $case ) {
+			$this->setUp();
+			$run_id = $this->create_link_run( 'exact_upc_match', false, true );
+			self::assertTrue( $this->manager->queue( $run_id ) );
+			if ( 'deleted' === $case ) {
+				$this->wpdb->tables['wp_ideaxperts_ea_mappings'] = array();
+				$this->catalog_state->mappings                   = array();
+			} else {
+				$this->wpdb->tables['wp_ideaxperts_ea_mappings'][0]['wc_product_id'] = 88;
+				$this->catalog_state->mappings[0]['wc_product_id']                   = 88;
+			}
+			$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+			$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+			self::assertSame( 'manual_required', $this->imports->items( $run_id )[0]['status'] );
+		}
+	}
+
+	public function test_cancellation_before_and_after_link_is_authoritative_and_idempotent(): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+
+		$this->setUp();
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
+		self::assertTrue( $this->imports->finalize_cancellation( $run_id ) );
+		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		self::assertSame( 'applied', $this->imports->items( $run_id )[0]['status'] );
+	}
+
+	public function test_stale_link_callback_generation_cannot_create_mapping(): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] - 1 );
+
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		self::assertSame( 'pending', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'dispatched', $this->imports->action( (int) $action['id'] )['status'] );
 	}
 
 	public function test_stale_dispatch_adopts_an_exact_existing_scheduler_action(): void {
@@ -101,7 +378,7 @@ final class ImportManagerTest extends TestCase {
 			$code .= $contents;
 		}
 
-		self::assertDoesNotMatchRegularExpression( '/(?:wp_insert_post|wp_update_post|update_post_meta|delete_post_meta|media_handle_sideload|wc_update_product_stock|set_(?:regular_)?price|->save)\s*\(/', $code );
+		self::assertDoesNotMatchRegularExpression( '/(?:wp_insert_post|wp_update_post|wp_insert_attachment|wp_set_object_terms|update_post_meta|delete_post_meta|media_handle_sideload|wc_update_product_stock|wc_create_product|set_(?:regular_|sale_)?price|set_stock|set_status|set_category_ids|set_image_id|set_gallery_image_ids|->save)\s*\(/', $code );
 	}
 
 	public function test_queue_uses_keyset_batches_beyond_the_display_limit(): void {
@@ -242,7 +519,7 @@ final class ImportManagerTest extends TestCase {
 	public function test_two_cancellation_reconcilers_settle_the_same_action_idempotently(): void {
 		$run_id = $this->create_run();
 		self::assertTrue( $this->manager->queue( $run_id ) );
-		$action = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
+		$action                     = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
 		$GLOBALS['ea_action_queue'] = array();
 		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
 
@@ -283,7 +560,7 @@ final class ImportManagerTest extends TestCase {
 		self::assertTrue( $this->manager->queue( $run_id ) );
 		$action                                  = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
 		$GLOBALS['ea_action_queue'][0]['status'] = 'in-progress';
-		$execution = $this->imports->claim_action_execution( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		$execution                               = $this->imports->claim_action_execution( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
 		self::assertNotSame( '', $execution );
 		self::assertTrue( $this->imports->request_cancellation( $run_id ) );
 		$this->manager->reconcile();
@@ -416,6 +693,225 @@ final class ImportManagerTest extends TestCase {
 		self::assertNotSame( '', $this->imports->claim_action_execution( (int) $action['id'], (string) $action['logical_key'], (int) $current['dispatch_generation'] ) );
 	}
 
+	public function test_bugbot_locked_mapping_deletion_must_not_be_recreated(): void {
+		$run_id = $this->create_link_run( 'exact_upc_match', false, true );
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$this->wpdb->before_mapping_lock = function (): void {
+			$this->wpdb->tables['wp_ideaxperts_ea_mappings'] = array();
+		};
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertSame( 'manual_required', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+	}
+
+	/** @dataProvider lockedMappingRaces */
+	public function test_locked_mapping_current_read_overrules_inspection( bool $expected_mapping, string $mutation, string $expected_status ): void {
+		$run = $this->create_link_run( 'exact_upc_match', false, $expected_mapping );
+		self::assertTrue( $this->manager->queue( $run ) );
+		$item = $this->imports->items( $run )[0];
+		$this->wpdb->before_mapping_lock = function () use ( $item, $mutation ): void {
+			$row = array_merge( $this->mapping_row( $item ), array( 'id' => 999 ) );
+			if ( 'redirected' === $mutation ) {
+				$row['wc_product_id'] = 99;
+			} elseif ( 'option' === $mutation ) {
+				$row['ea_option_id'] = 'different';
+			} elseif ( 'identifier' === $mutation ) {
+				$row['normalized_upc'] = '009999999999';
+			} elseif ( 'inactive' === $mutation ) {
+				$row['mapping_status'] = 'inactive';
+			}
+			// Snapshot provider still returns its approved view; only the locking read changes.
+			$this->wpdb->tables['wp_ideaxperts_ea_mappings'] = 'deleted' === $mutation ? array() : array( $row );
+		};
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertSame( $expected_status, $this->imports->items( $run )[0]['status'] );
+		self::assertCount( 'deleted' === $mutation ? 0 : 1, $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+		if ( 'redirected' === $mutation ) {
+			self::assertSame( 99, $this->wpdb->tables['wp_ideaxperts_ea_mappings'][0]['wc_product_id'] );
+		}
+	}
+
+	/** @return list<array{bool,string,string}> */
+	public static function lockedMappingRaces(): array {
+		return array(
+			array( true, 'deleted', 'manual_required' ),
+			array( true, 'redirected', 'manual_required' ),
+			array( true, 'option', 'manual_required' ),
+			array( true, 'unchanged', 'applied' ),
+			array( false, 'exact_insert', 'applied' ),
+			array( false, 'redirected', 'manual_required' ),
+			array( false, 'option', 'manual_required' ),
+			array( false, 'identifier', 'manual_required' ),
+			array( false, 'inactive', 'manual_required' ),
+		);
+	}
+
+	/** @dataProvider linkOutcomeMatrix */
+	public function test_link_action_completion_requires_authoritative_terminal_outcome( string $status, bool $terminal ): void {
+		$run = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$token = $this->imports->claim_action_execution( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		$this->wpdb->tables['wp_ideaxperts_ea_import_items'][0]['status'] = $status;
+		if ( ! $terminal ) {
+			self::assertFalse( $this->imports->complete_action_execution( (int) $action['id'], (string) $action['logical_key'], $token ) );
+		}
+		$this->imports->settle_action_for_item( (int) $action['id'], (string) $action['logical_key'], $token );
+		self::assertSame( $terminal, 'completed' === $this->imports->action( (int) $action['id'] )['status'] );
+	}
+
+	/** @return list<array{string,bool}> */
+	public static function linkOutcomeMatrix(): array {
+		return array(
+			array( 'pending', false ), array( 'leased', false ), array( 'validating', false ),
+			array( 'ready', false ), array( 'applying', false ), array( 'reconciling', false ),
+			array( 'applied', true ), array( 'stale_snapshot', true ), array( 'manual_required', true ),
+			array( 'blocked', true ), array( 'retry_wait', false ), array( 'cancelled', true ), array( 'manual_recovery', true ),
+		);
+	}
+
+	public function test_bugbot_ready_crash_action_expires_first(): void {
+		$run_id = $this->create_link_run();
+		self::assertTrue( $this->manager->queue( $run_id ) );
+		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
+		$this->imports->claim_action_execution( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		$item = $this->imports->items( $run_id )[0];
+		$token = $this->imports->claim_item( (int) $item['id'] );
+		self::assertTrue( $this->imports->begin_validation( (int) $item['id'], $token ) );
+		$identity = $this->imports->reserve_catalog_identity( (int) $item['id'], $token );
+		self::assertGreaterThan( 0, $this->imports->reserve_upc( $identity, (int) $item['id'], $token ) );
+		self::assertTrue( $this->imports->accept_freshness( (int) $item['id'], $token ) );
+		$this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['lease_expires_at'] = '2026-09-28 12:00:01';
+		$this->wpdb->tables['wp_ideaxperts_ea_import_items'][0]['lease_expires_at'] = '2026-09-28 12:05:00';
+		$GLOBALS['ea_now'] = '2026-09-28 12:00:02';
+		$this->manager->reconcile();
+		$action = $this->imports->action( (int) $action['id'] );
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertNotSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+		$GLOBALS['ea_now'] = '2026-09-28 13:00:00';
+		$this->manager->reconcile();
+		$action = $this->imports->action( (int) $action['id'] );
+		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
+		self::assertSame( 'applied', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
+	}
+
+	private function create_link_run( string $classification = 'exact_upc_match', bool $variation = false, bool $approved_mapping = false ): int {
+		static $dry_run_id = 4000;
+		++$dry_run_id;
+		$upc                             = '001234567890';
+		$product                         = 50;
+		$variation_id                    = $variation ? 51 : 0;
+		$target_key                      = $product . ':' . $variation_id;
+		$target_state                    = array(
+			'wc_product_id'     => $product,
+			'wc_variation_id'   => $variation_id,
+			'product_type'      => $variation ? 'variation' : 'simple',
+			'product_status'    => 'publish',
+			'parent_product_id' => $variation ? $product : 0,
+			'sku'               => 'exact_sku_match' === $classification ? $upc : 'SKU-50',
+			'upcs'              => 'exact_upc_match' === $classification ? array( $upc ) : array(),
+		);
+		$this->catalog_state->target     = $target_state;
+		if ( $variation ) {
+			$target_state['parent'] = array( 'id' => $product, 'type' => 'variable', 'status' => 'publish' );
+			$this->catalog_state->target = $target_state;
+		}
+		$this->catalog_state->upc_owners = 'exact_upc_match' === $classification ? array( $target_key ) : array();
+		$this->catalog_state->sku_owners = 'exact_sku_match' === $classification ? array( $target_key ) : array();
+		$approved_mapping_row            = array(
+			'source_scope'    => 'endless-aisles:production',
+			'environment'     => 'production',
+			'wc_product_id'   => $product,
+			'wc_variation_id' => $variation_id,
+			'ea_product_id'   => 'p-link',
+			'ea_option_id'    => 'o-link',
+			'normalized_upc'  => $upc,
+			'mapping_status'  => 'active',
+		);
+		$this->catalog_state->mappings   = $approved_mapping ? array( $approved_mapping_row ) : array();
+		$vendor                          = array(
+			'ea_product_id'  => 'p-link',
+			'ea_option_id'   => 'o-link',
+			'normalized_upc' => $upc,
+			'classification' => $classification,
+			'vendor_sku'     => 'exact_sku_match' === $classification ? $upc : '',
+			'review_flags'   => array(),
+			'retail_price'   => '10',
+			'purchasable'    => 1,
+			'discontinued'   => 0,
+		);
+		$target                          = array(
+			'wc_product_id'     => $product,
+			'wc_variation_id'   => $variation_id,
+			'approved_state'    => $target_state,
+			'approved_mappings' => $this->catalog_state->mappings,
+		);
+		$context                         = array_merge(
+			$vendor,
+			array(
+				'target_wc_product_id'   => $product,
+				'target_wc_variation_id' => $variation_id,
+			)
+		);
+		$item                            = array(
+			'dry_run_item_id'       => 1,
+			'action'                => 'link',
+			'entity_kind'           => $variation ? 'variation' : 'option',
+			'group_key'             => hash( 'sha256', "production\0p-link" ),
+			'vendor'                => $vendor,
+			'target'                => $target,
+			'expected_vendor_hash'  => ApprovalManifest::hash( $vendor ),
+			'expected_local_hash'   => ApprovalManifest::hash( $target ),
+			'expected_mapping_hash' => ApprovalManifest::hash(
+				array(
+					'product' => 'p-link',
+					'option'  => 'o-link',
+					'target'  => $target,
+				)
+			),
+			'expected_live_hash'    => $this->catalog_state->fingerprint( $context, 'endless-aisles:production', 'production' ),
+		);
+		$manifest                        = array(
+			'version'                => 1,
+			'policy_version'         => ImportPolicy::VERSION,
+			'dry_run_id'             => $dry_run_id,
+			'dry_run_generation'     => 1,
+			'environment'            => 'production',
+			'source_scope'           => 'endless-aisles:production',
+			'approval_generation'    => 1,
+			'matching_settings_hash' => str_repeat( 'a', 64 ),
+			'items'                  => array( $item ),
+		);
+		$run_id                          = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
+		if ( $approved_mapping && $run_id > 0 ) {
+			$item = $this->imports->items( $run_id )[0];
+			$this->wpdb->tables['wp_ideaxperts_ea_mappings'][] = array_merge( $this->mapping_row( $item ), array( 'id' => 990 ) );
+		}
+		return $run_id;
+	}
+
+	/** @param array<string,mixed> $item @return array<string,mixed> */
+	private function mapping_row( array $item ): array {
+		return array(
+			'source_scope'    => $item['source_scope'],
+			'environment'     => $item['environment'],
+			'wc_product_id'   => $item['target_wc_product_id'],
+			'wc_variation_id' => $item['target_wc_variation_id'],
+			'ea_product_id'   => $item['ea_product_id'],
+			'ea_option_id'    => $item['ea_option_id'],
+			'upc'             => $item['normalized_upc'],
+			'normalized_upc'  => $item['normalized_upc'],
+			'mapping_status'  => 'active',
+			'last_synced_at'  => null,
+			'created_at'      => $GLOBALS['ea_now'],
+			'updated_at'      => $GLOBALS['ea_now'],
+		);
+	}
+
 	private function create_run( string $environment = 'production', int $count = 1, string $product_prefix = 'p' ): int {
 		static $dry_run_id = 2000;
 		++$dry_run_id;
@@ -466,7 +962,7 @@ final class ImportManagerTest extends TestCase {
 		}
 		$manifest = array(
 			'version'                => 1,
-			'policy_version'         => '3a-v1',
+			'policy_version'         => ImportPolicy::VERSION,
 			'dry_run_id'             => $dry_run_id,
 			'dry_run_generation'     => 1,
 			'environment'            => $environment,
