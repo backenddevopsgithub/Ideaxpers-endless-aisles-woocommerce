@@ -81,7 +81,7 @@ Variation inspection loads the child and its current parent directly, without lo
 
 Mapping freshness at finalization compares normalized authoritative fields from the actual `SELECT ... FOR UPDATE` rows against approval: source scope, environment, EA product/option, WooCommerce product/variation, active status, and normalized UPC. Row IDs and timestamps are not identity. Mapping rows do not persist ownership mode; catalog identity ownership is separately fenced as `linked_existing`. A deleted approved mapping is never recreated, and a changed mapping is never redirected. The sole adoption exception is an initially absent mapping becoming exactly the intended active mapping with every authoritative field matching.
 
-For link work (`approved_action = link`; the durable callback remains `validate`), completion is allowed only for item states `applied`, `stale_snapshot`, `manual_required`, `blocked`, `cancelled`, and `manual_recovery`. It is not allowed for `pending`, `leased`, `validating`, `ready`, `applying`, `reconciling`, or `retry_wait`. Validation-only creation keeps its separate `ready` completion behavior. Settlement locks run, action, then item and checks the current execution owner and lease before deciding.
+For link and create work (the durable callback remains `validate`), completion is allowed only for item states `applied`, `stale_snapshot`, `manual_required`, `blocked`, `cancelled`, and `manual_recovery`. It is not allowed for `pending`, `leased`, `validating`, `ready`, `applying`, `reconciling`, or `retry_wait`. Settlement locks run, action, then item and checks the current execution owner and lease before deciding. Creation's external-write states are recovered through exact correlation, never reset for another save. See [Milestone 3C](MILESTONE-3C.md).
 
 A crash after `ready` leaves finalization unfinished. If the action lease expires first, a replacement callback defers its durable action to `retry_wait`, available no earlier than the item lease expiry and at least 30 seconds later; it does not steal the item or consume a dispatch-failure attempt. Reconciliation reclaims expired pre-apply items before redispatch. If the item lease expires first, its `retry_wait` state remains recoverable until the action lease expires. When both have expired, the new callback claims the item with a new token, reacquires reservations, revalidates freshness, and finalizes the exact link. Cancellation, stale generations, and mapping drift remain fenced during this window. Recovery depends on the existing reconciliation entry point running; it does not busy-loop.
 
@@ -97,7 +97,7 @@ Historical authoritative QA mapping rows from older code are not silently delete
 
 ## Deferred work
 
-New-product and variation creation, merchant product-field writes, image/media handling, 24-hour product scheduling, inventory transport/import, shipping, order submission, and order cancellation are deferred. Rate limits and a server-side maximum `per_page` are not documented, so dry runs use 10 and conservative local bounds.
+An approved Production pricing rule and Production dry-run entry point remain prerequisites for operational new simple Draft creation. Variation creation, merchant product-field writes, image/media handling, 24-hour product scheduling, inventory transport/import, shipping, order submission, and order cancellation are deferred. Rate limits and a server-side maximum `per_page` are not documented, so dry runs use 10 and conservative local bounds.
 
 ## Releases
 

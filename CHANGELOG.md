@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added Milestone 3C's simple Draft writer, committed creation intent, exact operation correlation, read-only crash recovery and transactional `vendor_created` mapping finalization.
+- Added sanitized QA creation previews and deliberate Draft approval UI. Production fails before reservations until a pricing rule is explicitly approved; no vendor price rule is inferred.
+- Added deterministic crash/rollback, cancellation, concurrency-interleaving, correlation, sanitization and real-writer API-spy regressions.
+
 - Fixed completed QA previews blocking later independent previews: terminal QA reservations become reusable, active contention retries, and cancellation/recovery retain ownership until settled.
 - Bounded all import audit payloads deterministically within 4,000 bytes, preserving complete identity/operation references and hashing verbose mapping context; maximum utf8mb4 identifiers no longer strand finalization.
 

@@ -33,13 +33,14 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		$target_key   = $product_id . ':' . $variation_id;
 		$upc          = (string) ( $item['normalized_upc'] ?? '' );
 		$sku          = UpcNormalizer::normalize( (string) ( $item['vendor_sku'] ?? ( 'exact_sku_match' === (string) ( $item['classification'] ?? '' ) ? $upc : '' ) ) );
-		$target       = $this->target( $product_id, $variation_id );
-		$owners       = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc' );
+		$creation     = 'create' === ( $item['approved_action'] ?? '' ) || 'new_product_candidate' === ( $item['classification'] ?? '' );
+		$target       = $this->target( $product_id, $variation_id, $creation );
+		$owners       = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc', $creation );
 		$sku_owners   = '' === $sku ? array() : $this->identifier_owners( $sku, 'sku' );
 		if ( 'production' === $environment ) {
 			foreach ( $owners as $owner ) {
 				if ( $owner !== $target_key ) {
-					throw new \RuntimeException( 'The normalized UPC is already owned by a different WooCommerce object.' );
+					throw new CatalogInspectionConflict( 'The normalized UPC is already owned by a different WooCommerce object.' );
 				}
 			}
 		}
@@ -71,21 +72,19 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 	}
 
 	/** @return array<string,mixed>|null */
-	private function target( int $product_id, int $variation_id ): ?array {
+	private function target( int $product_id, int $variation_id, bool $creation = false ): ?array {
 		$object_id = $variation_id > 0 ? $variation_id : $product_id;
 		if ( $object_id < 1 ) {
 			return null;
 		}
-		// @phpstan-ignore-next-line WooCommerce is checked before services boot.
 		$product = \wc_get_product( $object_id );
 		if ( ! is_object( $product ) ) {
 			return null;
 		}
 		$parent_id = $variation_id > 0 && method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
-		$target    = $this->capture( $product, $parent_id );
+		$target    = $this->capture( $product, $parent_id, $creation );
 		if ( null !== $target && $variation_id > 0 ) {
 			// Load only the parent, never its child collection.
-			// @phpstan-ignore-next-line WooCommerce is checked before services boot.
 			$parent           = $parent_id > 0 ? \wc_get_product( $parent_id ) : false;
 			$target['parent'] = is_object( $parent ) && method_exists( $parent, 'get_id' ) && method_exists( $parent, 'get_type' ) && method_exists( $parent, 'get_status' ) ? array(
 				'id'     => (int) $parent->get_id(),
@@ -105,7 +104,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 	}
 
 	/** @return list<string> */
-	private function identifier_owners( string $identifier, string $kind ): array {
+	private function identifier_owners( string $identifier, string $kind, bool $creation = false ): array {
 		$owners = array();
 		// Products and variations are separate bounded queries so one variable
 		// product cannot materialize its complete child-ID collection.
@@ -113,7 +112,6 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		$type_groups = array( array_keys( \wc_get_product_types() ), array( 'variation' ) );
 		foreach ( $type_groups as $types ) {
 			for ( $page = 1; ; ++$page ) {
-				// @phpstan-ignore-next-line WooCommerce is checked before services boot.
 				$result   = \wc_get_products(
 					array(
 						'limit'    => self::PAGE_SIZE,
@@ -121,7 +119,6 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 						'paginate' => true,
 						'return'   => 'objects',
 						'type'     => $types,
-						// @phpstan-ignore-next-line
 						'status'   => array_keys( \wc_get_product_statuses() ),
 					)
 				);
@@ -130,7 +127,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 				foreach ( $products as $product ) {
 					if ( is_object( $product ) ) {
 						$parent_id = method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
-						$this->record_owner( $owners, $product, $parent_id, $identifier, $kind );
+						$this->record_owner( $owners, $product, $parent_id, $identifier, $kind, $creation );
 					}
 				}
 				if ( $page >= $pages ) {
@@ -144,8 +141,8 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 	}
 
 	/** @param array<string,true> $owners */
-	private function record_owner( array &$owners, object $product, int $parent_id, string $identifier, string $kind ): void {
-		$captured = $this->capture( $product, $parent_id );
+	private function record_owner( array &$owners, object $product, int $parent_id, string $identifier, string $kind, bool $creation = false ): void {
+		$captured = $this->capture( $product, $parent_id, $creation );
 		$matches  = null !== $captured && ( 'upc' === $kind ? in_array( $identifier, $captured['upcs'], true ) : hash_equals( (string) $captured['normalized_sku'], UpcNormalizer::normalize( $identifier ) ) );
 		if ( $matches ) {
 			$owners[ $captured['wc_product_id'] . ':' . $captured['wc_variation_id'] ] = true;
@@ -153,14 +150,14 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 	}
 
 	/** @return array<string,mixed>|null */
-	private function capture( object $product, int $parent_id ): ?array {
+	private function capture( object $product, int $parent_id, bool $creation = false ): ?array {
 		if ( ! method_exists( $product, 'get_id' ) || ! method_exists( $product, 'get_type' ) || ! method_exists( $product, 'get_status' ) || ! method_exists( $product, 'get_sku' ) || ! method_exists( $product, 'get_meta' ) ) {
 			return null;
 		}
 		$product_id   = $parent_id > 0 ? $parent_id : (int) $product->get_id();
 		$variation_id = $parent_id > 0 ? (int) $product->get_id() : 0;
 		$upcs         = array();
-		if ( 'yes' === $this->settings->get( 'use_global_unique_id', 'yes' ) && method_exists( $product, 'get_global_unique_id' ) ) {
+		if ( ( $creation || 'yes' === $this->settings->get( 'use_global_unique_id', 'yes' ) ) && method_exists( $product, 'get_global_unique_id' ) ) {
 			$upcs[] = UpcNormalizer::normalize( (string) $product->get_global_unique_id() );
 		}
 		foreach ( (array) $this->settings->get( 'upc_meta_keys', array() ) as $key ) {

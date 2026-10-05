@@ -2,6 +2,7 @@
 namespace IdeaXperts\EndlessAisles\Tests\Import;
 
 use IdeaXperts\EndlessAisles\Import\LiveCatalogStateProvider;
+use IdeaXperts\EndlessAisles\Import\CatalogInspectionConflict;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 use IdeaXperts\EndlessAisles\Tests\Support\DryRunMemoryWpdb;
 use IdeaXperts\EndlessAisles\Tests\Support\ReadOnlyProduct;
@@ -34,6 +35,17 @@ final class LiveCatalogStateProviderTest extends TestCase {
 			'target_wc_product_id'   => 5,
 			'target_wc_variation_id' => 0,
 		);
+	}
+
+	public function test_creation_always_inspects_native_upc_even_when_optional_matching_is_disabled(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array( 'use_global_unique_id' => 'no', 'upc_meta_keys' => array(), 'allow_sku_upc_match' => 'no' );
+		$item = array_merge( $this->item, array( 'approved_action' => 'create', 'normalized_upc' => '001234567890' ) );
+		$view = $this->provider->inspect( $item, 'endless-aisles:production', 'production', true );
+		self::assertSame( array( '5:0' ), $view['upc_owners'] );
+		self::assertSame( array( '001234567890' ), $view['target']['upcs'] );
+		$item['target_wc_product_id'] = 0;
+		$this->expectException( \RuntimeException::class );
+		$this->provider->inspect( $item, 'endless-aisles:production', 'production', true );
 	}
 
 	/** @dataProvider catalogMutations */
@@ -96,8 +108,19 @@ final class LiveCatalogStateProviderTest extends TestCase {
 
 	public function test_production_fingerprint_rejects_upc_owned_by_another_store_object(): void {
 		$GLOBALS['ea_wc_products'][] = new ReadOnlyProduct( 8, 'simple', 'publish', 'Other', '009999999999', 'SKU-8' );
-		$this->expectException( \RuntimeException::class );
+		$this->expectException( CatalogInspectionConflict::class );
 		$this->provider->fingerprint( $this->item, 'endless-aisles:production', 'production', true );
+	}
+
+	public function test_mapping_select_failure_does_not_claim_a_semantic_conflict(): void {
+		$GLOBALS['wpdb']->fail_read_contains = 'SELECT source_scope,environment,wc_product_id';
+		try {
+			$this->provider->inspect( $this->item, 'endless-aisles:production', 'production', true );
+			self::fail( 'Expected the actual mapping SELECT to fail.' );
+		} catch ( \RuntimeException $error ) {
+			self::assertNotInstanceOf( CatalogInspectionConflict::class, $error );
+			self::assertSame( 'Catalog mapping freshness read failed.', $error->getMessage() );
+		}
 	}
 
 	public function test_variation_parent_change_changes_fingerprint(): void {

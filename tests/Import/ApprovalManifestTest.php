@@ -26,6 +26,7 @@ final class ApprovalManifestTest extends TestCase {
 			'wc_product_id'   => 0,
 			'wc_variation_id' => 0,
 			'retail_price'    => '10',
+			'vendor_title'    => 'Safe title',
 			'purchasable'     => 1,
 			'discontinued'    => 0,
 		);

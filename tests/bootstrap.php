@@ -10,6 +10,10 @@ define( 'MINUTE_IN_SECONDS', 60 );
 define( 'DAY_IN_SECONDS', 86400 );
 define( 'ARRAY_A', 'ARRAY_A' );
 
+require_once __DIR__ . '/Support/WritableSimpleProduct.php';
+class_alias( \IdeaXperts\EndlessAisles\Tests\Support\WritableSimpleProduct::class, 'WC_Product_Simple' );
+function clean_post_cache( int $id ): void {}
+
 $GLOBALS['ea_test_options']       = array();
 $GLOBALS['ea_scheduled']          = false;
 $GLOBALS['ea_schedule_calls']     = 0;
@@ -32,6 +36,17 @@ $GLOBALS['ea_remote_response']    = array(
 	'body'     => '{}',
 );
 $GLOBALS['ea_remote_requests']    = array();
+$GLOBALS['ea_recovery_actions'] = array();
+$GLOBALS['ea_registered_hooks'] = array();
+
+function add_action( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): void {
+	$GLOBALS['ea_registered_hooks'][ $hook ][] = $callback;
+}
+function do_action( string $hook, mixed ...$args ): void {
+	foreach ( $GLOBALS['ea_registered_hooks'][ $hook ] ?? array() as $callback ) {
+		$callback( ...$args );
+	}
+}
 
 if ( ! class_exists( 'WP_Error' ) ) {
 	class WP_Error {
@@ -45,6 +60,13 @@ if ( ! class_exists( 'WP_Error' ) ) {
 
 function sanitize_key( string $value ): string {
 	return strtolower( preg_replace( '/[^a-z0-9_\-]/', '', $value ) ?? '' ); }
+// Deliberately small sanitizer fakes; actual WordPress allowlist behavior requires integration tests.
+function sanitize_text_field( string $value ): string {
+	return trim( strip_tags( $value ) ); }
+function wp_kses_post( string $value ): string {
+	$value = preg_replace( '/<(script|style)\b[^>]*>.*?<\/\1>/is', '', $value ) ?? '';
+	$value = strip_tags( $value, '<p><strong><em><br>' );
+	return preg_replace( '/<(p|strong|em|br)\b[^>]*>/i', '<$1>', $value ) ?? ''; }
 function sanitize_email( string $value ): string {
 	return filter_var( $value, FILTER_SANITIZE_EMAIL ) ?: ''; }
 function absint( mixed $value ): int {
@@ -102,8 +124,16 @@ function wp_remote_retrieve_header( array $response, string $header ): string {
 	return '';
 }
 function as_next_scheduled_action( string $hook, array $args = array(), string $group = '' ): int|false {
+	if ( 'ideaxperts_ea_import_recover_creations' === $hook ) {
+		return $GLOBALS['ea_recovery_actions'][0]['timestamp'] ?? false;
+	}
 	return $GLOBALS['ea_scheduled'] ? 123 : false; }
 function as_schedule_recurring_action( int $timestamp, int $interval, string $hook, array $args = array(), string $group = '', bool $unique = false ): int {
+	if ( 'ideaxperts_ea_import_recover_creations' === $hook ) {
+		if ( ! empty( $GLOBALS['ea_recovery_schedule_failure'] ) ) { return 0; }
+		$GLOBALS['ea_recovery_actions'][] = array( 'hook' => $hook, 'timestamp' => $timestamp, 'interval' => $interval, 'args' => $args, 'group' => $group );
+		return 124;
+	}
 	++$GLOBALS['ea_schedule_calls'];
 	$GLOBALS['ea_scheduled']         = true;
 	$GLOBALS['ea_schedule_interval'] = $interval;
@@ -136,6 +166,7 @@ function as_enqueue_async_action( string $hook, array $args = array(), string $g
 	return $id;
 }
 function as_unschedule_all_actions( string $hook, array $args = array(), string $group = '' ): void {
+	if ( 'ideaxperts_ea_import_recover_creations' === $hook ) { $GLOBALS['ea_recovery_actions'] = array(); }
 	++$GLOBALS['ea_unschedule_calls'];
 	$GLOBALS['ea_unschedule_log'][] = array(
 		'hook'  => $hook,

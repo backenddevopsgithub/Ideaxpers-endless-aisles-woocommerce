@@ -38,7 +38,7 @@ final class ImportPolicyTest extends TestCase {
 	public function test_discontinued_unmapped_is_skipped_and_review_flags_remain_distinct(): void {
 		self::assertSame( 'skip', $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'discontinued' ) ) )['action'] );
 		self::assertFalse( $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'suspicious_price' ) ) )['eligible'] );
-		self::assertTrue( $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'suspicious_price' ) ), true )['eligible'] );
+		self::assertFalse( $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'suspicious_price' ) ), true )['eligible'] );
 	}
 
 	/** @param list<string> $flags @return array<string,mixed> */

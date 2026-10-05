@@ -6,7 +6,7 @@ use IdeaXperts\EndlessAisles\Catalog\MatchClassifier;
 defined( 'ABSPATH' ) || exit;
 
 final class ImportPolicy {
-	public const VERSION = '3b-v1';
+	public const VERSION = '3c-v1';
 
 	/**
 	 * Derive an action exclusively from the persisted dry-run result.
@@ -33,8 +33,8 @@ final class ImportPolicy {
 			return $this->result( true, true, 'validate', 'already_linked' );
 		}
 		if ( 'new_product_candidate' === $classification ) {
-			if ( in_array( 'suspicious_price', $flags, true ) || in_array( 'not_purchasable', $flags, true ) ) {
-				return $manual_resolution ? $this->result( true, false, 'create', 'explicit_review' ) : $this->result( false, false, 'blocked', 'explicit_review_required' );
+			if ( array() !== $flags || ( isset( $item['purchasable'] ) && 1 !== (int) $item['purchasable'] ) || ! empty( $item['discontinued'] ) ) {
+				return $this->result( false, false, 'blocked', 'explicit_review_required' );
 			}
 			return $this->result( true, true, 'create', 'safe_new_candidate' );
 		}

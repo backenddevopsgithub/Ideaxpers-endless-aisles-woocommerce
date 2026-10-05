@@ -6,19 +6,53 @@ use IdeaXperts\EndlessAisles\Database\ImportRepository;
 defined( 'ABSPATH' ) || exit;
 
 final class ImportManager {
-	public const GROUP = 'ideaxperts-endless-aisles-import';
-	public const HOOK  = 'ideaxperts_ea_import_validate_item';
+	public const GROUP             = 'ideaxperts-endless-aisles-import';
+	public const HOOK              = 'ideaxperts_ea_import_validate_item';
+	public const RECOVERY_HOOK     = 'ideaxperts_ea_import_recover_creations';
+	public const RECOVERY_INTERVAL = 60;
 
-	public function __construct( private readonly ImportRepository $imports ) {}
+	private readonly SimpleProductCreation $creation;
+
+	public function __construct( private readonly ImportRepository $imports, ?SimpleProductCreation $creation = null ) {
+		$this->creation = $creation ?? new SimpleProductCreation( $imports );
+	}
 
 	public function register(): void {
 		add_action( self::HOOK, array( $this, 'validate_item' ), 10, 3 );
 		add_action( 'admin_init', array( $this, 'reconcile' ) );
+		add_action( 'init', array( $this, 'schedule_recovery' ), 30 );
+		add_action( self::RECOVERY_HOOK, array( $this, 'recover_creations' ) );
+	}
+
+	/** Install a durable recurring row before any risky external write. */
+	public function schedule_recovery(): void {
+		self::ensure_recovery_scheduled();
+	}
+
+	/** Verify scheduling outside every custom-table transaction. */
+	public static function ensure_recovery_scheduled(): bool {
+		if ( ! function_exists( 'as_next_scheduled_action' ) || ! function_exists( 'as_schedule_recurring_action' ) ) {
+			return false;
+		}
+		if ( false === as_next_scheduled_action( self::RECOVERY_HOOK, array(), self::GROUP ) ) {
+			as_schedule_recurring_action( time() + self::RECOVERY_INTERVAL, self::RECOVERY_INTERVAL, self::RECOVERY_HOOK, array(), self::GROUP, true );
+		}
+		return false !== as_next_scheduled_action( self::RECOVERY_HOOK, array(), self::GROUP );
+	}
+
+	/** Dedicated background path never dispatches new creation work. */
+	public function recover_creations(): void {
+		self::ensure_recovery_scheduled();
+		$this->creation->reconcile();
+		foreach ( $this->imports->active_run_ids() as $run_id ) {
+			$this->imports->finalize_cancellation( $run_id );
+		}
 	}
 
 	public static function unschedule_all(): void {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( self::HOOK, array(), self::GROUP );
+			as_unschedule_all_actions( self::RECOVERY_HOOK, array(), self::GROUP );
 		}
 	}
 
@@ -45,6 +79,7 @@ final class ImportManager {
 	}
 
 	public function reconcile(): void {
+		$this->creation->reconcile();
 		$this->imports->reclaim_expired_pre_apply();
 		$this->imports->reclaim_expired_action_executions();
 		foreach ( $this->imports->cancel_requested_actions() as $action ) {
@@ -125,6 +160,10 @@ final class ImportManager {
 			$this->imports->settle_action_for_item( $action_id, $logical_key, $execution );
 			return;
 		}
+		$item = $this->imports->item( $item_id );
+		if ( $item && 'create' === $item['approved_action'] && ! $this->creation->preflight( $item, $token, $action, $execution ) ) {
+			return;
+		}
 		$identity_id = $this->imports->reserve_catalog_identity( $item_id, $token );
 		$item        = $this->imports->item( $item_id );
 		if ( $identity_id < 1 || ! $item || ( '' !== (string) $item['normalized_upc'] && $this->imports->reserve_upc( $identity_id, $item_id, $token ) < 1 ) ) {
@@ -158,7 +197,10 @@ final class ImportManager {
 			);
 			return;
 		}
-		// Creation remains validation-only. Milestone 3B writes plugin-owned links only.
+		if ( $item && 'create' === (string) $item['approved_action'] ) {
+			$this->creation->apply( $item, $identity_id, $token, $action, $execution );
+			return;
+		}
 		$this->imports->complete_action_execution( $action_id, $logical_key, $execution );
 	}
 

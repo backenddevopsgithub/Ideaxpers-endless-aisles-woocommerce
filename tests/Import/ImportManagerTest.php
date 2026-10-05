@@ -19,7 +19,7 @@ final class ImportManagerTest extends TestCase {
 	private FixedCatalogStateProvider $catalog_state;
 
 	public function test_invalid_signing_configuration_reports_bounded_error_without_secret_output(): void {
-		$run_id = $this->create_run();
+		$run_id = $this->create_run( 'qa' );
 		self::assertTrue( $this->manager->queue( $run_id ) );
 		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
 		$invalid = str_repeat( 'sensitive-fixture', 4 );
@@ -57,7 +57,7 @@ final class ImportManagerTest extends TestCase {
 		$this->manager                 = new ImportManager( $this->imports );
 	}
 
-	public function test_validation_callback_reserves_identities_stops_at_ready_and_is_idempotent(): void {
+	public function test_creation_callback_blocks_missing_pricing_and_is_idempotent(): void {
 		$run_id = $this->create_run();
 		self::assertTrue( $this->manager->queue( $run_id ) );
 		$action = $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0];
@@ -66,10 +66,11 @@ final class ImportManagerTest extends TestCase {
 		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
 
 		$item = $this->imports->items( $run_id )[0];
-		self::assertSame( 'ready', $item['status'] );
+		self::assertSame( 'blocked', $item['status'] );
+		self::assertSame( 'pricing_policy_missing', $item['failure_code'] );
 		self::assertSame( 1, (int) $item['attempt_count'] );
-		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_catalog_identities'] );
-		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
+		self::assertCount( 0, $this->wpdb->tables['wp_ideaxperts_ea_catalog_identities'] );
+		self::assertCount( 0, $this->wpdb->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
 		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
 		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
 	}
@@ -442,7 +443,7 @@ final class ImportManagerTest extends TestCase {
 	}
 
 	public function test_stale_freshness_terminalizes_both_item_and_action(): void {
-		$run_id = $this->create_run();
+		$run_id = $this->create_run( 'qa' );
 		self::assertTrue( $this->manager->queue( $run_id ) );
 		$action                       = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
 		$this->catalog_state->version = 'changed';
@@ -574,14 +575,14 @@ final class ImportManagerTest extends TestCase {
 		self::assertSame( 'cancelled', $this->imports->run( $run_id )['status'] );
 	}
 
-	public function test_action_close_failure_after_ready_is_reconciled_by_duplicate_callback(): void {
+	public function test_action_close_failure_after_blocking_is_reconciled_by_duplicate_callback(): void {
 		$run_id = $this->create_run();
 		self::assertTrue( $this->manager->queue( $run_id ) );
 		$action                             = $this->imports->action( (int) $this->wpdb->tables['wp_ideaxperts_ea_import_actions'][0]['id'] );
 		$this->wpdb->fail_import_event_type = 'action_completed';
 
 		$this->manager->validate_item( (int) $action['id'], (string) $action['logical_key'], (int) $action['dispatch_generation'] );
-		self::assertSame( 'ready', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'blocked', $this->imports->items( $run_id )[0]['status'] );
 		self::assertSame( 'running', $this->imports->action( (int) $action['id'] )['status'] );
 
 		$GLOBALS['ea_now'] = '2026-09-28 13:00:00';
@@ -589,7 +590,7 @@ final class ImportManagerTest extends TestCase {
 		$current = $this->imports->action( (int) $action['id'] );
 		$this->manager->validate_item( (int) $current['id'], (string) $current['logical_key'], (int) $current['dispatch_generation'] );
 
-		self::assertSame( 'ready', $this->imports->items( $run_id )[0]['status'] );
+		self::assertSame( 'blocked', $this->imports->items( $run_id )[0]['status'] );
 		self::assertSame( 'completed', $this->imports->action( (int) $action['id'] )['status'] );
 	}
 
@@ -927,12 +928,14 @@ final class ImportManagerTest extends TestCase {
 				'normalized_upc' => str_pad( (string) $index, 12, '0', STR_PAD_LEFT ),
 				'classification' => 'new_product_candidate',
 				'review_flags'   => array(),
+				'vendor_title' => 'Vendor title',
 				'retail_price'   => '10',
 				'purchasable'    => 1,
 				'discontinued'   => 0,
 			);
 				$items[] = array(
 					'dry_run_item_id'       => $index,
+					'creation_binding'      => ( new \IdeaXperts\EndlessAisles\Import\SimpleProductProjection() )->binding( $vendor, $environment, ( new \IdeaXperts\EndlessAisles\Import\SimpleProductProjection() )->build( $vendor ) ),
 					'action'                => 'create',
 					'entity_kind'           => 'option',
 					'group_key'             => hash( 'sha256', $environment . "\0" . $vendor['ea_product_id'] ),

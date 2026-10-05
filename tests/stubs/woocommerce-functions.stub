@@ -7,3 +7,18 @@ function wc_get_products( array $args ): object {}
 function wc_get_product_statuses(): array {}
 
 function wc_get_product( int $product_id ): object|false|null {}
+
+class WC_Product_Simple {
+	public function set_status( string $value ): void {}
+	public function set_name( string $value ): void {}
+	public function set_description( string $value ): void {}
+	public function set_regular_price( string $value ): void {}
+	public function set_global_unique_id( string $value ): void {}
+	public function update_meta_data( string $key, string $value ): void {}
+	public function save(): int {}
+	public function get_type(): string {}
+	public function get_status(): string {}
+	public function get_global_unique_id(): string {}
+	public function get_meta( string $key, bool $single = true ): mixed {}
+	public function read_meta_data( bool $force_read = false ): void {}
+}

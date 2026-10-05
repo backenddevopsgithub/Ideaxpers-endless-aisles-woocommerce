@@ -9,6 +9,8 @@ interface CatalogStateProviderInterface {
 	 *
 	 * @param array<string,mixed> $item Dry-run, manifest, or import item fields.
 	 * @return array{fingerprint:string,target:array<string,mixed>|null,upc_owners:list<string>,sku_owners:list<string>,mappings:list<array<string,mixed>>}
+	 * @throws CatalogInspectionConflict A successful read proved incompatible ownership.
+	 * @throws \RuntimeException Inspection could not establish current state.
 	 */
 	public function inspect( array $item, string $source_scope, string $environment, bool $force_refresh = false ): array;
 

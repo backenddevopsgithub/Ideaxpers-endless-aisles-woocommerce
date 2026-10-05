@@ -11,6 +11,8 @@ parameters:
   stubFiles:
     - tests/stubs/action-scheduler.stub
     - tests/stubs/woocommerce-functions.stub
+  scanFiles:
+    - tests/stubs/woocommerce-functions.stub
   excludePaths:
     analyse:
       - vendor

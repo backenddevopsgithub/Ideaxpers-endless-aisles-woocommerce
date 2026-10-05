@@ -7,7 +7,7 @@ defined( 'ABSPATH' ) || exit;
 final class ImportAuditPayload {
 	public const MAX_BYTES    = 4000;
 	private const VALUE_BYTES = 128;
-	private const FIELDS      = array( 'environment', 'source_scope', 'match_type', 'ownership_mode', 'preview_only', 'mapping_created', 'mapping_adopted', 'catalog_identity_id', 'previous_mapping_hash', 'previous_mapping_count', 'final_mapping', 'preview_target', 'action_id', 'dispatch_generation', 'approved_by', 'approved_at', 'approval_generation', 'before_live_hash', 'final_live_hash', 'manifest_hash', 'item_count', 'mapping_count', 'failure_code', 'reason', 'action_type', 'before_status', 'after_status' );
+	private const FIELDS      = array( 'environment', 'source_scope', 'match_type', 'ownership_mode', 'preview_only', 'mapping_created', 'mapping_adopted', 'catalog_identity_id', 'previous_mapping_hash', 'previous_mapping_count', 'final_mapping', 'preview_target', 'action_id', 'dispatch_generation', 'approved_by', 'approved_at', 'approval_generation', 'before_live_hash', 'final_live_hash', 'manifest_hash', 'item_count', 'mapping_count', 'failure_code', 'reason', 'action_type', 'before_status', 'after_status', 'desired_projection_hash' );
 	private const CORE_FIELDS = array( 'environment', 'source_scope', 'match_type', 'ownership_mode', 'preview_only', 'mapping_created', 'mapping_adopted', 'catalog_identity_id', 'action_id', 'approved_by', 'approved_at', 'approval_generation', 'before_live_hash', 'final_live_hash', 'failure_code' );
 
 	/**

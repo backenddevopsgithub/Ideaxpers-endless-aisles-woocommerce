@@ -9,7 +9,7 @@ defined( 'ABSPATH' ) || exit;
 final class ApprovalManifest {
 	public const MAX_ITEMS = 100000;
 
-	public function __construct( private readonly ImportPolicy $policy, private readonly ?CatalogStateProviderInterface $catalog_state = null ) {}
+	public function __construct( private readonly ImportPolicy $policy, private readonly ?CatalogStateProviderInterface $catalog_state = null, private readonly SimpleProductProjection $projection = new SimpleProductProjection() ) {}
 
 	/**
 	 * @param array<string,mixed>       $dry_run
@@ -36,21 +36,26 @@ final class ApprovalManifest {
 			}
 			$classification = (string) ( $item['classification'] ?? '' );
 			$vendor         = array(
-				'ea_product_id'  => (string) ( $item['ea_product_id'] ?? '' ),
-				'ea_option_id'   => (string) ( $item['ea_option_id'] ?? '' ),
-				'normalized_upc' => (string) ( $item['normalized_upc'] ?? '' ),
-				'classification' => $classification,
-				'vendor_sku'     => 'exact_sku_match' === $classification ? UpcNormalizer::normalize( (string) ( $item['normalized_upc'] ?? '' ) ) : '',
-				'review_flags'   => json_decode( (string) ( $item['review_flags'] ?? '[]' ), true ),
-				'retail_price'   => (string) ( $item['retail_price'] ?? '' ),
-				'purchasable'    => (int) ( $item['purchasable'] ?? 0 ),
-				'discontinued'   => (int) ( $item['discontinued'] ?? 0 ),
+				'ea_product_id'             => (string) ( $item['ea_product_id'] ?? '' ),
+				'ea_option_id'              => (string) ( $item['ea_option_id'] ?? '' ),
+				'normalized_upc'            => (string) ( $item['normalized_upc'] ?? '' ),
+				'classification'            => $classification,
+				'vendor_sku'                => 'exact_sku_match' === $classification ? UpcNormalizer::normalize( (string) ( $item['normalized_upc'] ?? '' ) ) : '',
+				'review_flags'              => json_decode( (string) ( $item['review_flags'] ?? '[]' ), true ),
+				'retail_price'              => (string) ( $item['retail_price'] ?? '' ),
+				'purchasable'               => (int) ( $item['purchasable'] ?? 0 ),
+				'discontinued'              => (int) ( $item['discontinued'] ?? 0 ),
+				'vendor_title'              => (string) ( $item['vendor_title'] ?? '' ),
+				'vendor_option_description' => (string) ( $item['vendor_option_description'] ?? '' ),
 			);
 			$source_scope   = 'endless-aisles:' . $environment;
 			if ( ! $this->catalog_state ) {
 				throw new RuntimeException( 'Live catalog state is required for approval.' );
 			}
 			$inspection = $this->catalog_state->inspect( $item, $source_scope, $environment );
+			if ( 'create' === $decision['action'] && ( null !== $inspection['target'] || array() !== $inspection['upc_owners'] || array() !== $inspection['mappings'] ) ) {
+				throw new RuntimeException( 'New creation requires current mapping and UPC absence.' );
+			}
 			if ( 'link' === $decision['action'] && (int) ( $item['wc_variation_id'] ?? 0 ) > 0 && ! LiveCatalogStateProvider::valid_variation_parent( $inspection['target'], (int) ( $item['wc_product_id'] ?? 0 ) ) ) {
 				throw new RuntimeException( 'Variation approval requires an existing variable parent.' );
 			}
@@ -61,8 +66,10 @@ final class ApprovalManifest {
 				'approved_mappings' => $inspection['mappings'],
 			);
 			$live_hash        = $inspection['fingerprint'];
+			$creation_binding = 'create' === $decision['action'] ? $this->projection->binding( $vendor, $environment, $this->projection->build( $vendor ) ) : array();
 			$manifest_items[] = array(
 				'dry_run_item_id'       => $item_id,
+				'creation_binding'      => $creation_binding,
 				'action'                => $decision['action'],
 				'entity_kind'           => (int) $local['wc_variation_id'] > 0 ? 'variation' : 'option',
 				'group_key'             => hash( 'sha256', $environment . "\0" . $vendor['ea_product_id'] ),

@@ -1,6 +1,6 @@
 # IdeaXperts Endless Aisles for WooCommerce
 
-Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 3B can explicitly link an approved exact UPC or exact SKU match to an existing simple product or variation using plugin-owned tables. It does **not** create or modify WooCommerce products, synchronize inventory, or submit orders.
+Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 3C adds a guarded simple Draft creation and recovery path for approved new candidates, alongside 3B existing-product linking. Production creation currently blocks with `pricing_policy_missing`: this repository contains no approved Production pricing rule. QA can preview new candidates without catalog mutation. Inventory synchronization and order submission remain disabled.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ QA can observe an exact Production mapping as read-only context and successfully
 
 QA identity and UPC reservations protect active work, including retries and crash recovery. Settled previews release their reservations atomically; a later independent QA approval can reuse them. Active contention waits for a retry. Cancellation releases reservations only after authoritative settlement; ambiguous applying/reconciling/manual-recovery work retains them. Production ownership remains durable. All import audit JSON uses one deterministic allowlist and a 4,000-byte budget, with compact target references and canonical hashes instead of full mapping rows.
 
-The existing product remains merchant-owned: titles, descriptions, identifiers, prices, stock, status, taxonomy, shipping data, dimensions, and media are untouched. Product/variation creation, images, inventory synchronization, shipping, and order submission remain disabled.
+The existing product remains merchant-owned: titles, descriptions, identifiers, prices, stock, status, taxonomy, shipping data, dimensions, and media are untouched. New simple Draft creation has its own committed-intent/reconciliation workflow; see [Milestone 3C](docs/MILESTONE-3C.md). Variation creation, images, inventory synchronization, shipping, and order submission remain disabled.
 
 ## Development
 

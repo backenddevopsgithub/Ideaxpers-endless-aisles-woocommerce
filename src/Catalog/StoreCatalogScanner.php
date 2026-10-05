@@ -26,14 +26,12 @@ final class StoreCatalogScanner {
 	/** @return array{products:int,variations:int,has_more:bool,records:list<array<string,mixed>>} */
 	public function collect_batch( int $page ): array {
 		// WooCommerce supplies these catalog functions after the dependency gate.
-		// @phpstan-ignore-next-line
 		$result   = \wc_get_products(
 			array(
 				'limit'    => self::BATCH_SIZE,
 				'page'     => max( 1, $page ),
 				'paginate' => true,
 				'return'   => 'objects',
-				// @phpstan-ignore-next-line
 				'status'   => array_keys( \wc_get_product_statuses() ),
 			)
 		);
@@ -54,7 +52,6 @@ final class StoreCatalogScanner {
 			if ( method_exists( $product, 'get_children' ) ) {
 				foreach ( array_chunk( $product->get_children(), self::BATCH_SIZE ) as $child_ids ) {
 					foreach ( $child_ids as $child_id ) {
-						// @phpstan-ignore-next-line
 						$variation = \wc_get_product( $child_id );
 						if ( $variation ) {
 							++$counts['variations'];

@@ -164,8 +164,8 @@ final class ImportRepositoryTest extends TestCase {
 		self::assertTrue( $this->imports->move_applying_to_reconciling( $context['item_id'], $context['token'] ) );
 		self::assertTrue( $this->imports->finish_reconciliation_without_write( $context['item_id'], $context['token'] ) );
 		self::assertTrue( $this->imports->settle_cancel_requested_action( $context['action_id'], $context['dispatch_generation'], 99 ) );
-		self::assertTrue( $this->imports->finalize_cancellation( $context['run_id'] ) );
-		self::assertSame( 'cancelled', $this->imports->run( $context['run_id'] )['status'] );
+		self::assertFalse( $this->imports->finalize_cancellation( $context['run_id'] ) );
+		self::assertSame( 'cancelling', $this->imports->run( $context['run_id'] )['status'] );
 	}
 
 	public function test_cancellation_fences_a_validating_worker_and_becomes_authoritative(): void {
@@ -512,7 +512,9 @@ final class ImportRepositoryTest extends TestCase {
 			(int) $values['action_id'],
 			(string) $values['logical_key'],
 			(int) $values['dispatch_generation'],
-			(string) $values['action_execution_token']
+			(string) $values['action_execution_token'],
+			$this->imports->approved_creation_binding( (int) $values['item_id'] ) ?? array(),
+			new \IdeaXperts\EndlessAisles\Import\SimpleProductProjection( new \IdeaXperts\EndlessAisles\Tests\Support\FixturePricingPolicy() )
 		);
 	}
 
@@ -522,6 +524,8 @@ final class ImportRepositoryTest extends TestCase {
 		++$dry_run_id;
 		foreach ( $items as &$item ) {
 			$vendor                     = is_array( $item['vendor'] ?? null ) ? $item['vendor'] : array();
+			$projection = new \IdeaXperts\EndlessAisles\Import\SimpleProductProjection( new \IdeaXperts\EndlessAisles\Tests\Support\FixturePricingPolicy() );
+			$item['creation_binding'] = $projection->binding( $vendor, $environment, $projection->build( $vendor ) );
 			$item['group_key']          = hash( 'sha256', $environment . "\0" . (string) ( $vendor['ea_product_id'] ?? '' ) );
 			$context                    = array_merge(
 				$vendor,
@@ -555,6 +559,7 @@ final class ImportRepositoryTest extends TestCase {
 			'classification' => 'new_product_candidate',
 			'review_flags'   => array(),
 			'retail_price'   => '10',
+			'vendor_title'   => 'Safe title',
 			'purchasable'    => 1,
 			'discontinued'   => 0,
 		);

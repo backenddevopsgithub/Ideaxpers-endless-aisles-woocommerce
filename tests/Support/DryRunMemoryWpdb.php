@@ -24,6 +24,7 @@ final class DryRunMemoryWpdb {
 	public string $fail_import_event_type       = '';
 	public string $fail_insert_table_contains   = '';
 	public string $fail_update_table_contains   = '';
+	public string $throw_update_table_contains  = '';
 	public string $fail_release_table_contains = '';
 	private int $replace_calls                  = 0;
 	/** @var callable|null */
@@ -154,6 +155,10 @@ final class DryRunMemoryWpdb {
 
 	/** @param array<string,mixed> $data @param array<string,mixed> $where */
 	public function update( string $table, array $data, array $where, mixed $format = null, mixed $where_format = null ): int|false {
+		if ( '' !== $this->throw_update_table_contains && str_contains( $table, $this->throw_update_table_contains ) ) {
+			$this->throw_update_table_contains = '';
+			throw new \RuntimeException( 'Injected update exception.' );
+		}
 		if ( 'released' === ( $data['reservation_status'] ?? '' ) && '' !== $this->fail_release_table_contains && str_contains( $table, $this->fail_release_table_contains ) ) {
 			$this->fail_release_table_contains = '';
 			return false;
