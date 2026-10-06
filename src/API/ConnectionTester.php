@@ -61,11 +61,11 @@ final class ConnectionTester {
 	}
 
 	private function store_qa_status( string $environment, string $status ): void {
-		if ( 'qa' !== $environment ) {
+		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) ) {
 			return;
 		}
 		update_option(
-			'ideaxperts_ea_qa_connection_status',
+			'ideaxperts_ea_' . $environment . '_connection_status',
 			array(
 				'status'    => $status,
 				'tested_at' => current_time( 'mysql', true ),

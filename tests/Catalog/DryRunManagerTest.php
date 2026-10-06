@@ -833,6 +833,46 @@ final class DryRunManagerTest extends TestCase {
 		self::assertSame( 'failed', $this->runs->run( $run_id )['status'] );
 	}
 
+	public function test_production_preview_fetch_is_read_only_and_scoped(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['environment'] = 'production';
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['production_confirmed'] = \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED;
+		$this->settings->replace_token( 'production', 'production-only-secret' );
+		$GLOBALS['ea_test_options']['ideaxperts_ea_production_connection_status'] = array( 'status' => 'connected' );
+		$client = new SequenceClient( array( array( 'current_page' => 1, 'per_page' => 10, 'next_page_url' => null, 'data' => array( (object) array( 'id' => 'p', 'title' => 'Title', 'sizes' => array( (object) array( 'id' => 'o', 'upc' => '001234567890', 'price' => '20', 'wholesale' => '10', 'purchasability' => true, 'discontinued' => false ) ) ) ) ) ) );
+		$manager = $this->manager( $client );
+		$run = $manager->start_production_preview( 7 );
+		$this->run_next_action( $manager );
+		$this->run_next_action( $manager );
+		self::assertSame( 'completed', $this->runs->run( $run )['status'] );
+		self::assertSame( 'production', $this->runs->run( $run )['environment'] );
+		self::assertSame( 'endless-aisles:production', $this->runs->items( $run )[0]['source_scope'] );
+		self::assertSame( '20', $this->runs->items( $run )[0]['retail_price'] );
+		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_catalog_identities'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_import_runs'] );
+	}
+
+	public function test_production_preview_requires_production_configuration(): void {
+		$this->expectException( RuntimeException::class );
+		$this->manager()->start_production_preview( 7 );
+	}
+
+	public function test_production_preview_cancellation_prevents_vendor_fetch(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['environment'] = 'production';
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['production_confirmed'] = \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED;
+		$this->settings->replace_token( 'production', 'production-only-secret' );
+		$GLOBALS['ea_test_options']['ideaxperts_ea_production_connection_status'] = array( 'status' => 'connected' );
+		$client = new SequenceClient( array() );
+		$manager = $this->manager( $client );
+		$run = $manager->start_production_preview( 7 );
+		self::assertTrue( $manager->cancel( $run, $this->runs->claim_generation( $run ) ) );
+		self::assertSame( 'cancelled', $this->runs->run( $run )['status'] );
+		self::assertSame( array(), $client->requests );
+		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
+	}
+
 	private function manager( ?SequenceClient $client = null ): DryRunManager {
 		$client  = $client ?? new SequenceClient( array() );
 		$catalog = new CatalogService( $this->settings, new BaseUrlResolver(), new DatabaseLogger(), static fn(): SequenceClient => $client );

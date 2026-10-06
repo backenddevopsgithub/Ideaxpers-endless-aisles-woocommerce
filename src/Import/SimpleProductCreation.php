@@ -25,7 +25,9 @@ final class SimpleProductCreation {
 				throw new \RuntimeException( 'approval_projection_changed' );
 			}
 			if ( 'production' === $item['environment'] && '' !== $desired['failure_code'] ) {
-				throw new \RuntimeException( 'pricing_policy_missing' );
+				$this->imports->block_item( (int) $item['id'], $token, $desired['failure_code'] );
+				$this->imports->settle_action_for_item( (int) $action['id'], (string) $action['logical_key'], $execution );
+				return false;
 			}
 			return true;
 		} catch ( \RuntimeException $error ) {

@@ -115,7 +115,7 @@ final class CatalogDryRunAdmin {
 			$this->action_form( 'ideaxperts_ea_local_discovery', 'Run local UPC discovery', 0, false );
 		}
 		if ( $active ) {
-			echo '<h2>' . esc_html__( 'Current progress', 'ideaxperts-endless-aisles' ) . '</h2><p>' . esc_html( sprintf( 'Run #%d — %s — store page %d — API page %d — heartbeat %s', $active_id, $active['status'], $active['current_store_page'], $active['current_api_page'], (string) ( $active['last_heartbeat_at'] ?? '' ) ) ) . '</p>';
+			echo '<h2>' . esc_html__( 'Current progress', 'ideaxperts-endless-aisles' ) . '</h2><p>' . esc_html( sprintf( 'Run #%d — %s — %s — store page %d — API page %d — heartbeat %s', $active_id, strtoupper( (string) $active['environment'] ), $active['status'], $active['current_store_page'], $active['current_api_page'], (string) ( $active['last_heartbeat_at'] ?? '' ) ) ) . '</p>';
 			$this->action_form( 'ideaxperts_ea_cancel_dry_run', 'Cancel active dry run', $active_id, false, (int) ( $active['claim_generation'] ?? 0 ) );
 		} else {
 			$this->action_form( 'ideaxperts_ea_start_dry_run', 'Start catalog dry run', 0, ! $ready );
@@ -137,11 +137,11 @@ final class CatalogDryRunAdmin {
 			}
 			echo '</ul>';
 		}
-		$last = $wpdb->get_row( "SELECT * FROM {$table} WHERE environment = 'qa' AND status IN ('completed','failed','cancelled') ORDER BY id DESC LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$last = $wpdb->get_row( "SELECT * FROM {$table} WHERE environment IN ('qa','production') AND status IN ('completed','failed','cancelled') ORDER BY id DESC LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( ! is_array( $last ) ) {
 			return;
 		}
-		echo '<h2>' . esc_html__( 'Last finished run', 'ideaxperts-endless-aisles' ) . '</h2><p>' . esc_html( sprintf( 'Run #%d — %s', $last['id'], $last['status'] ) ) . '</p>';
+		echo '<h2>' . esc_html__( 'Last finished run', 'ideaxperts-endless-aisles' ) . '</h2><p>' . esc_html( sprintf( 'Run #%d — %s — %s', $last['id'], strtoupper( (string) $last['environment'] ), $last['status'] ) ) . '</p>';
 		$counters = json_decode( (string) $last['match_counters'], true );
 		if ( is_array( $counters ) ) {
 			echo '<ul>';

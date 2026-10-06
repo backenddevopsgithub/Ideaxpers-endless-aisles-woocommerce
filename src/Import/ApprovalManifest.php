@@ -43,6 +43,9 @@ final class ApprovalManifest {
 				'vendor_sku'                => 'exact_sku_match' === $classification ? UpcNormalizer::normalize( (string) ( $item['normalized_upc'] ?? '' ) ) : '',
 				'review_flags'              => json_decode( (string) ( $item['review_flags'] ?? '[]' ), true ),
 				'retail_price'              => (string) ( $item['retail_price'] ?? '' ),
+				'wholesale_price'           => (string) ( $item['wholesale_price'] ?? '' ),
+				'map_price'                 => (string) ( $item['map_price'] ?? '' ),
+				'source_observed_at'        => (string) ( $item['created_at'] ?? '' ),
 				'purchasable'               => (int) ( $item['purchasable'] ?? 0 ),
 				'discontinued'              => (int) ( $item['discontinued'] ?? 0 ),
 				'vendor_title'              => (string) ( $item['vendor_title'] ?? '' ),
@@ -53,7 +56,7 @@ final class ApprovalManifest {
 				throw new RuntimeException( 'Live catalog state is required for approval.' );
 			}
 			$inspection = $this->catalog_state->inspect( $item, $source_scope, $environment );
-			if ( 'create' === $decision['action'] && ( null !== $inspection['target'] || array() !== $inspection['upc_owners'] || array() !== $inspection['mappings'] ) ) {
+			if ( 'create' === $decision['action'] && ( null !== $inspection['target'] || array() !== $inspection['upc_owners'] || array() !== $inspection['sku_owners'] || array() !== $inspection['mappings'] ) ) {
 				throw new RuntimeException( 'New creation requires current mapping and UPC absence.' );
 			}
 			if ( 'link' === $decision['action'] && (int) ( $item['wc_variation_id'] ?? 0 ) > 0 && ! LiveCatalogStateProvider::valid_variation_parent( $inspection['target'], (int) ( $item['wc_product_id'] ?? 0 ) ) ) {

@@ -31,6 +31,8 @@ use IdeaXperts\EndlessAisles\Import\ImportPolicy;
 use IdeaXperts\EndlessAisles\Import\LiveCatalogStateProvider;
 use IdeaXperts\EndlessAisles\Import\SimpleProductProjection;
 use IdeaXperts\EndlessAisles\Import\SimpleProductCreation;
+use IdeaXperts\EndlessAisles\Import\ConfiguredCreationPricingPolicy;
+use IdeaXperts\EndlessAisles\Import\CreationPreview;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 
 defined( 'ABSPATH' ) || exit;
@@ -75,9 +77,16 @@ final class Plugin {
 		$this->container->set( LiveCatalogStateProvider::class, fn() => new LiveCatalogStateProvider( $this->container->get( SettingsRepository::class ) ) );
 		$this->container->set( ImportRepository::class, fn() => new ImportRepository( $this->container->get( LiveCatalogStateProvider::class ) ) );
 		$this->container->set( ImportPolicy::class, static fn() => new ImportPolicy() );
-		$this->container->set( SimpleProductProjection::class, static fn() => new SimpleProductProjection() );
+		$this->container->set(
+			SimpleProductProjection::class,
+			static function () {
+				$config = defined( 'IDEAXPERTS_EA_CREATION_PRICING' ) ? constant( 'IDEAXPERTS_EA_CREATION_PRICING' ) : null;
+				return new SimpleProductProjection( is_array( $config ) ? new ConfiguredCreationPricingPolicy( $config ) : null );
+			}
+		);
 		$this->container->set( SimpleProductCreation::class, fn() => new SimpleProductCreation( $this->container->get( ImportRepository::class ), projection: $this->container->get( SimpleProductProjection::class ) ) );
 		$this->container->set( ApprovalManifest::class, fn() => new ApprovalManifest( $this->container->get( ImportPolicy::class ), $this->container->get( LiveCatalogStateProvider::class ), $this->container->get( SimpleProductProjection::class ) ) );
+		$this->container->set( CreationPreview::class, fn() => new CreationPreview( $this->container->get( ApprovalManifest::class ), $this->container->get( ImportPolicy::class ), $this->container->get( LiveCatalogStateProvider::class ) ) );
 		$this->container->set( ImportManager::class, fn() => new ImportManager( $this->container->get( ImportRepository::class ), $this->container->get( SimpleProductCreation::class ) ) );
 		$this->container->set( MatchClassifier::class, static fn() => new MatchClassifier() );
 		$this->container->set( BaseUrlResolver::class, static fn() => new BaseUrlResolver() );
@@ -138,7 +147,9 @@ final class Plugin {
 				$this->container->get( ImportRepository::class ),
 				$this->container->get( ApprovalManifest::class ),
 				$this->container->get( ImportManager::class ),
-				$this->container->get( ImportPolicy::class )
+				$this->container->get( ImportPolicy::class ),
+				$this->container->get( CreationPreview::class ),
+				$this->container->get( DryRunManager::class )
 			)
 		);
 		$this->container->set(

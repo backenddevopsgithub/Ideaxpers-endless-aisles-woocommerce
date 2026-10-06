@@ -34,9 +34,12 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 		$upc          = (string) ( $item['normalized_upc'] ?? '' );
 		$sku          = UpcNormalizer::normalize( (string) ( $item['vendor_sku'] ?? ( 'exact_sku_match' === (string) ( $item['classification'] ?? '' ) ? $upc : '' ) ) );
 		$creation     = 'create' === ( $item['approved_action'] ?? '' ) || 'new_product_candidate' === ( $item['classification'] ?? '' );
-		$target       = $this->target( $product_id, $variation_id, $creation );
-		$owners       = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc', $creation );
-		$sku_owners   = '' === $sku ? array() : $this->identifier_owners( $sku, 'sku' );
+		if ( $creation && 'yes' === $this->settings->get( 'allow_sku_upc_match', 'no' ) ) {
+			$sku = $upc;
+		}
+		$target     = $this->target( $product_id, $variation_id, $creation );
+		$owners     = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc', $creation );
+		$sku_owners = '' === $sku ? array() : $this->identifier_owners( $sku, 'sku' );
 		if ( 'production' === $environment ) {
 			foreach ( $owners as $owner ) {
 				if ( $owner !== $target_key ) {

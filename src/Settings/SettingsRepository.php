@@ -49,9 +49,9 @@ final class SettingsRepository {
 			if ( isset( $input[ $field ] ) && '' !== trim( (string) $input[ $field ] ) ) {
 				$credentials[ $environment ] = $cipher->encrypt( trim( (string) $input[ $field ] ) );
 				$changed                     = true;
-				if ( 'qa' === $environment ) {
+				if ( in_array( $environment, array( 'qa', 'production' ), true ) ) {
 					update_option(
-						'ideaxperts_ea_qa_connection_status',
+						'ideaxperts_ea_' . $environment . '_connection_status',
 						array(
 							'status'    => 'not_tested',
 							'tested_at' => '',
@@ -76,9 +76,9 @@ final class SettingsRepository {
 		$credentials                 = is_array( $credentials ) ? $credentials : array();
 		$credentials[ $environment ] = $cipher->encrypt( $token );
 		update_option( self::TOKEN_OPTION, $credentials, false );
-		if ( 'qa' === $environment ) {
+		if ( in_array( $environment, array( 'qa', 'production' ), true ) ) {
 			update_option(
-				'ideaxperts_ea_qa_connection_status',
+				'ideaxperts_ea_' . $environment . '_connection_status',
 				array(
 					'status'    => 'not_tested',
 					'tested_at' => '',

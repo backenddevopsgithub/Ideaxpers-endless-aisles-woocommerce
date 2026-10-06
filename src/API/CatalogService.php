@@ -5,6 +5,7 @@ use Closure;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\ProductMapping\ProductContract;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
+use IdeaXperts\EndlessAisles\Settings\SettingsValidator;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -29,17 +30,21 @@ final class CatalogService {
 	}
 
 	/** @return array{products:list<array<string,mixed>>,next_page:int|null,current_page:int} */
-	public function page( int $page ): array {
-		if ( 'qa' !== $this->settings->get( 'environment', 'qa' ) ) {
-			throw new ApiException( 'Catalog dry runs are restricted to QA.' );
+	public function page( int $page, string $environment = 'qa' ): array {
+		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) || $environment !== $this->settings->get( 'environment', 'qa' ) ) {
+			throw new ApiException( 'Catalog preview environment does not match the active configuration.' );
 		}
-		$token = $this->settings->token( 'qa' );
+		$token     = $this->settings->token( $environment );
+		$confirmed = SettingsValidator::PRODUCTION_CONFIRMED === $this->settings->get( 'production_confirmed', 'no' );
+		if ( 'production' === $environment && ! $confirmed ) {
+			throw new ApiException( 'Production preview requires the existing Production safeguard.' );
+		}
 		if ( '' === $token ) {
-			throw new ApiException( 'QA credential is not configured.' );
+			throw new ApiException( 'Catalog preview credential is not configured.' );
 		}
 		$paginator = new ProductPaginator();
 		$path      = $paginator->first_path( $page, self::PER_PAGE );
-		$client    = ( $this->client_factory )( $this->base_urls->resolve( 'qa' ), array( 'X-EA-REQUEST-TOKEN' => $token ) );
+		$client    = ( $this->client_factory )( $this->base_urls->resolve( $environment, $confirmed ), array( 'X-EA-REQUEST-TOKEN' => $token ) );
 		$response  = $this->request_with_retry( $client, $path );
 		$next_path = $paginator->next_path( $response );
 		$products  = array();

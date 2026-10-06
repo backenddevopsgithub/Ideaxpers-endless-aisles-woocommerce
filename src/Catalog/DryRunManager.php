@@ -7,6 +7,7 @@ use IdeaXperts\EndlessAisles\Database\DryRunRepository;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\ProductMapping\UpcNormalizer;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
+use IdeaXperts\EndlessAisles\Settings\SettingsValidator;
 use RuntimeException;
 
 defined( 'ABSPATH' ) || exit;
@@ -45,6 +46,14 @@ final class DryRunManager {
 
 	public function start_local_discovery( int $user_id ): int {
 		return $this->start_claimed( $user_id, 'local', 'Local catalog identifier discovery started.' );
+	}
+
+	public function start_production_preview( int $user_id ): int {
+		$connection = get_option( 'ideaxperts_ea_production_connection_status', array() );
+		if ( 'yes' !== $this->settings->get( 'enabled', 'no' ) || 'production' !== $this->settings->get( 'environment', 'qa' ) || SettingsValidator::PRODUCTION_CONFIRMED !== $this->settings->get( 'production_confirmed', 'no' ) || ! $this->settings->token_configured( 'production' ) || ! is_array( $connection ) || 'connected' !== ( $connection['status'] ?? '' ) ) {
+			throw new RuntimeException( 'An enabled Production configuration and successful Production connection test are required.' );
+		}
+		return $this->start_claimed( $user_id, 'production', 'Read-only Production catalog preview started.' );
 	}
 
 	private function start_claimed( int $user_id, string $environment, string $message ): int {
@@ -262,7 +271,8 @@ final class DryRunManager {
 			return;
 		}
 		try {
-			$result = $this->catalog->page( $page );
+			$run    = $this->runs->run( $run_id );
+			$result = $this->catalog->page( $page, (string) ( $run['environment'] ?? '' ) );
 			$built  = $this->build_catalog_items( $run_id, $result['products'] );
 			if ( ! $this->runs->refresh_intent_execution( $intent_id, $intent_token, $execution ) ) {
 				return;

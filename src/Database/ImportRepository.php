@@ -2329,7 +2329,7 @@ final class ImportRepository {
 			return null;
 		}
 		if ( 'create' === $item['approved_action'] ) {
-			if ( ! hash_equals( (string) $identity['operation_uuid'], (string) $item['operation_uuid'] ) || (int) $item['target_wc_product_id'] > 0 || (int) $item['target_wc_variation_id'] > 0 || array() !== $inspection['upc_owners'] || array() !== $inspection['mappings'] || null !== $inspection['target'] || ! is_array( $reservation ) ) {
+			if ( ! hash_equals( (string) $identity['operation_uuid'], (string) $item['operation_uuid'] ) || (int) $item['target_wc_product_id'] > 0 || (int) $item['target_wc_variation_id'] > 0 || array() !== $inspection['upc_owners'] || array() !== $inspection['sku_owners'] || array() !== $inspection['mappings'] || null !== $inspection['target'] || ! is_array( $reservation ) ) {
 				return null;
 			}
 			$wpdb->last_error = '';

@@ -66,6 +66,9 @@ final class ConnectionTesterTest extends TestCase {
 		self::assertTrue( $this->tester()->test()->successful );
 		self::assertSame( 'https://app.endlessaisles.io/api/products?page=1&per_page=1', $GLOBALS['ea_remote_requests'][0]['url'] );
 		self::assertSame( 'production-secret', $GLOBALS['ea_remote_requests'][0]['args']['headers']['X-EA-REQUEST-TOKEN'] );
+		self::assertSame( 'connected', get_option( 'ideaxperts_ea_production_connection_status' )['status'] );
+		$settings->replace_token( 'production', 'replacement-secret' );
+		self::assertSame( 'not_tested', get_option( 'ideaxperts_ea_production_connection_status' )['status'] );
 	}
 
 	public function test_timeout_is_reported_without_leaking_token(): void {

@@ -95,6 +95,28 @@ final class CatalogServiceTest extends TestCase {
 		}
 	}
 
+	public function test_explicit_production_preview_uses_production_credential_and_get_only(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['environment'] = 'production';
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['production_confirmed'] = \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED;
+		$this->settings->replace_token( 'production', 'production-secret' );
+		$client = new SequenceClient( array( $this->pageResponse() ) );
+		$service = new CatalogService( $this->settings, new BaseUrlResolver(), new DatabaseLogger(), static function ( string $url, array $headers ) use ( $client ): SequenceClient {
+			self::assertSame( 'https://app.endlessaisles.io', $url );
+			self::assertSame( array( 'X-EA-REQUEST-TOKEN' => 'production-secret' ), $headers );
+			return $client;
+		} );
+		$service->page( 1, 'production' );
+		self::assertSame( array( array( 'GET', '/api/products?page=1&per_page=10' ) ), $client->requests );
+	}
+
+	public function test_production_preview_without_safeguard_sends_no_request(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['environment'] = 'production';
+		$client = new SequenceClient( array() );
+		$this->expectException( ApiException::class );
+		try { $this->service( $client )->page( 1, 'production' ); }
+		finally { self::assertSame( array(), $client->requests ); }
+	}
+
 	private function service( SequenceClient $client, ?\Closure $sleeper = null ): CatalogService {
 		return new CatalogService( $this->settings, new BaseUrlResolver(), new DatabaseLogger(), static fn(): ApiClientInterface => $client, $sleeper );
 	}

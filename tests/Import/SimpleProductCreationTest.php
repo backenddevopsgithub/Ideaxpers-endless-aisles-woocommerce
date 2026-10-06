@@ -8,6 +8,8 @@ use IdeaXperts\EndlessAisles\Import\ImportPolicy;
 use IdeaXperts\EndlessAisles\Import\LiveCatalogStateProvider;
 use IdeaXperts\EndlessAisles\Import\SimpleProductCreation;
 use IdeaXperts\EndlessAisles\Import\SimpleProductProjection;
+use IdeaXperts\EndlessAisles\Import\CreationPricingPolicyInterface;
+use IdeaXperts\EndlessAisles\Import\ConfiguredCreationPricingPolicy;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 use IdeaXperts\EndlessAisles\Tests\Support\DryRunMemoryWpdb;
 use IdeaXperts\EndlessAisles\Tests\Support\FakeSimpleProductWriter;
@@ -26,7 +28,7 @@ final class SimpleProductCreationTest extends TestCase {
 	private int $run;
 	private array $action;
 	private array $vendor;
-	private ?FixturePricingPolicy $pricing = null;
+	private ?CreationPricingPolicyInterface $pricing = null;
 	private SimpleProductProjection $projection;
 	private ?LiveCatalogStateProvider $live_state = null;
 
@@ -45,7 +47,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->vendor = array( 'id' => 1, 'classification' => 'new_product_candidate', 'review_flags' => '[]', 'ea_product_id' => 'p', 'ea_option_id' => 'o', 'normalized_upc' => '001234567890', 'wc_product_id' => 0, 'wc_variation_id' => 0, 'vendor_title' => '<b>Safe title</b>', 'vendor_option_description' => '<p onclick="bad()">Description</p><script>bad()</script>', 'retail_price' => '10', 'purchasable' => 1, 'discontinued' => 0 );
 	}
 
-	private function approve( string $environment = 'production', bool $pricing = true, ?FixturePricingPolicy $policy = null ): void {
+	private function approve( string $environment = 'production', bool $pricing = true, ?CreationPricingPolicyInterface $policy = null ): void {
 		$this->pricing = $pricing ? ( $policy ?? new FixturePricingPolicy() ) : null;
 		$this->projection = new SimpleProductProjection( $this->pricing );
 		$this->creation = new SimpleProductCreation( $this->imports, $this->writer, $this->projection );
@@ -692,7 +694,7 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( 1, $this->writer->saves );
 	}
 
-	private function replace_policy( ?FixturePricingPolicy $pricing ): void {
+	private function replace_policy( ?CreationPricingPolicyInterface $pricing ): void {
 		$this->pricing = $pricing;
 		$this->projection = new SimpleProductProjection( $pricing );
 		$this->creation = new SimpleProductCreation( $this->imports, $this->writer, $this->projection );
@@ -747,6 +749,49 @@ final class SimpleProductCreationTest extends TestCase {
 
 	public static function pricingChanges(): array {
 		return array( array( 'price' ), array( 'version' ), array( 'id' ), array( 'config' ), array( 'removed' ) );
+	}
+
+	public function test_configured_source_price_drift_blocks_then_fresh_approval_creates_once(): void {
+		$GLOBALS['ea_test_options']['woocommerce_currency'] = 'USD';
+		$GLOBALS['ea_test_options']['woocommerce_price_num_decimals'] = 2;
+		$this->vendor['created_at'] = $GLOBALS['ea_now'];
+		$this->vendor['retail_price'] = '20';
+		$policy = new ConfiguredCreationPricingPolicy( ConfiguredCreationPricingPolicyTest::config() );
+		$this->approve( 'production', true, $policy );
+		self::assertSame( '20.00', $this->imports->approved_creation_binding( (int) $this->item()['id'] )['regular_price'] );
+		$row = &$this->db->tables['wp_ideaxperts_ea_vendor_snapshots'][0];
+		$original = $row;
+		$payload = json_decode( $row['payload'], true );
+		$payload['retail_price'] = '25';
+		$row['payload'] = wp_json_encode( $payload );
+		$row['payload_hash'] = ApprovalManifest::hash( $payload );
+		$this->db->tables['wp_ideaxperts_ea_import_items'][0]['expected_vendor_hash'] = $row['payload_hash'];
+		$this->deliver_callback();
+		self::assertSame( 'approval_projection_changed', $this->item()['failure_code'] );
+		self::assertSame( 0, $this->writer->saves );
+		self::assertSame( 0, $this->mapping_count() );
+		$row = $original;
+		$this->db->tables['wp_ideaxperts_ea_import_items'][0]['expected_vendor_hash'] = $original['payload_hash'];
+		$this->vendor['retail_price'] = '25';
+		$this->approve( 'production', true, $policy );
+		$this->deliver_callback();
+		self::assertSame( 'applied', $this->item()['status'] );
+		self::assertSame( '25.00', $this->writer->objects[501]['projection']['regular_price'] );
+		self::assertSame( 1, $this->writer->saves );
+	}
+
+	public function test_configured_policy_configuration_drift_requires_reapproval(): void {
+		$GLOBALS['ea_test_options']['woocommerce_currency'] = 'USD';
+		$GLOBALS['ea_test_options']['woocommerce_price_num_decimals'] = 2;
+		$this->vendor['created_at'] = $GLOBALS['ea_now'];
+		$config = ConfiguredCreationPricingPolicyTest::config();
+		$this->approve( 'production', true, new ConfiguredCreationPricingPolicy( $config ) );
+		$config['approval_reference'] = 'different-approved-decision';
+		$this->replace_policy( new ConfiguredCreationPricingPolicy( $config ) );
+		$this->deliver_callback();
+		self::assertSame( 'approval_projection_changed', $this->item()['failure_code'] );
+		self::assertSame( 0, $this->writer->saves );
+		self::assertSame( 0, $this->mapping_count() );
 	}
 
 	/** @dataProvider changedFields */

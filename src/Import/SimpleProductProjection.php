@@ -29,7 +29,7 @@ final class SimpleProductProjection {
 		}
 		$description = wp_kses_post( $this->text( $vendor['vendor_option_description'] ?? '', 16000 ) );
 		$price       = $this->pricing ? $this->pricing->regular_price( $vendor ) : null;
-		if ( null !== $price && ( 1 !== preg_match( '/\A[0-9]{1,8}(?:\.[0-9]{1,4})?\z/', $price ) || (float) $price <= 0 ) ) {
+		if ( null !== $price && ! ConfiguredCreationPricingPolicy::valid_decimal( $price ) ) {
 			throw new \RuntimeException( 'creation_invalid_price' );
 		}
 		return array(
@@ -37,7 +37,7 @@ final class SimpleProductProjection {
 			'description'   => $description,
 			'upc'           => $upc,
 			'regular_price' => $price ?? '',
-			'failure_code'  => null === $price ? 'pricing_policy_missing' : '',
+			'failure_code'  => null === $price ? ( $this->pricing instanceof ConfiguredCreationPricingPolicy ? $this->pricing->failure_code( $vendor ) : 'pricing_policy_missing' ) : '',
 		);
 	}
 
@@ -53,7 +53,7 @@ final class SimpleProductProjection {
 		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) || 1 !== preg_match( '/\A[a-zA-Z0-9_.:-]{1,128}\z/', $id ) || 1 !== preg_match( '/\A[a-zA-Z0-9_.:-]{1,128}\z/', $version ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', $config ) ) {
 			throw new \RuntimeException( 'creation_policy_invalid' );
 		}
-		$fields = array_merge(
+		$fields  = array_merge(
 			$desired,
 			array(
 				'product_type'        => 'simple',
@@ -61,7 +61,7 @@ final class SimpleProductProjection {
 				'correlation_version' => '3c-v1',
 			)
 		);
-		return array(
+		$binding = array(
 			'environment'      => $environment,
 			'field_policy'     => self::FIELD_POLICY,
 			'pricing_present'  => null !== $this->pricing,
@@ -76,6 +76,10 @@ final class SimpleProductProjection {
 			'regular_price'    => $desired['regular_price'],
 			'failure_code'     => $desired['failure_code'],
 		);
+		if ( $this->pricing instanceof ConfiguredCreationPricingPolicy ) {
+			$binding['pricing_configuration'] = (string) wp_json_encode( $this->pricing->configuration(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		}
+		return $binding;
 	}
 
 	private function text( mixed $value, int $limit ): string {
