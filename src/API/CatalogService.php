@@ -29,7 +29,7 @@ final class CatalogService {
 		};
 	}
 
-	/** @return array{products:list<array<string,mixed>>,next_page:int|null,current_page:int} */
+	/** @return array{products:list<array<string,mixed>>,next_page:int|null,current_page:int,total_products:int|null,total_pages:int|null} */
 	public function page( int $page, string $environment = 'qa' ): array {
 		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) || $environment !== $this->settings->get( 'environment', 'qa' ) ) {
 			throw new ApiException( 'Catalog preview environment does not match the active configuration.' );
@@ -70,9 +70,11 @@ final class CatalogService {
 			$next_page = (int) $query['page'];
 		}
 		return array(
-			'products'     => $products,
-			'next_page'    => $next_page,
-			'current_page' => (int) $response['current_page'],
+			'products'       => $products,
+			'next_page'      => $next_page,
+			'current_page'   => (int) $response['current_page'],
+			'total_products' => isset( $response['total'] ) && is_int( $response['total'] ) && $response['total'] >= 0 ? $response['total'] : null,
+			'total_pages'    => isset( $response['last_page'] ) && is_int( $response['last_page'] ) && $response['last_page'] >= 1 ? $response['last_page'] : null,
 		);
 	}
 

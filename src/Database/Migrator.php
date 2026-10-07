@@ -12,6 +12,11 @@ final class Migrator {
 	/** @param (Closure(string):mixed)|null $db_delta Database migration runner used by tests. */
 	public function __construct( private readonly ?Closure $db_delta = null ) {}
 
+	/** Read-only readiness check; never attempts a migration. */
+	public function ready(): bool {
+		return Schema::VERSION === get_option( self::VERSION_OPTION, '' ) && Schema::VERSION === get_option( self::INTEGRITY_OPTION, '' ) && $this->verify_integrity();
+	}
+
 	public function maybe_migrate(): void {
 		if ( Schema::VERSION === get_option( self::VERSION_OPTION, '' ) ) {
 			if ( $this->verify_integrity() ) {
@@ -26,15 +31,35 @@ final class Migrator {
 	public function migrate(): bool {
 		global $wpdb;
 		$previous = (string) get_option( self::VERSION_OPTION, '' );
-		if ( '' !== $previous && version_compare( $previous, '3.0.0', '<' ) && ! $this->prepare_three_upgrade() ) {
-			delete_option( self::INTEGRITY_OPTION );
-			return false;
-		}
 		if ( null === $this->db_delta ) {
 			require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		}
-		$runner = $this->db_delta ?? static fn( string $sql ): mixed => dbDelta( $sql );
-		foreach ( Schema::definitions( $wpdb->prefix, $wpdb->get_charset_collate() ) as $sql ) {
+		$runner      = $this->db_delta ?? static fn( string $sql ): mixed => dbDelta( $sql );
+		$definitions = Schema::definitions( $wpdb->prefix, $wpdb->get_charset_collate() );
+		if ( '' !== $previous && version_compare( $previous, '3.0.0', '<' ) ) {
+			// Milestone 1 has no catalog tables. Create only absent tables before
+			// backfilling; existing mapping rows must be normalized before dbDelta.
+			foreach ( $definitions as $suffix => $sql ) {
+				$table  = $wpdb->prefix . 'ideaxperts_ea_' . $suffix;
+				$engine = $this->table_engine( $table );
+				if ( '' !== $this->database_error() ) {
+					delete_option( self::INTEGRITY_OPTION );
+					return false;
+				}
+				if ( null === $engine ) {
+					$runner( $sql );
+					if ( ( isset( $wpdb->last_error ) && '' !== $wpdb->last_error ) || null === $this->table_engine( $table ) ) {
+						delete_option( self::INTEGRITY_OPTION );
+						return false;
+					}
+				}
+			}
+			if ( ! $this->prepare_three_upgrade() ) {
+				delete_option( self::INTEGRITY_OPTION );
+				return false;
+			}
+		}
+		foreach ( $definitions as $sql ) {
 			$runner( $sql );
 			if ( isset( $wpdb->last_error ) && '' !== $wpdb->last_error ) {
 				return false;

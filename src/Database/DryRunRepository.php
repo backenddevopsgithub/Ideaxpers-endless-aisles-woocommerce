@@ -24,10 +24,66 @@ final class DryRunRepository {
 
 	private bool $session_usable = true;
 
+	/** @return list<array<string,mixed>> */
+	public function recent_runs( int $limit = 10 ): array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d", min( 10, max( 1, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/** @return array<string,mixed>|null */
+	public function latest_run( string $environment ): ?array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE environment = %s ORDER BY id DESC LIMIT 1", $environment ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $row ) ? $row : null;
+	}
+
+	/** Counts saved UPC rows, distinct owners, duplicated UPC values and owners with conflicting values.
+	 * @return array<string,int>|null
+	 */
+	public function discovery_summary( int $run_id ): ?array {
+		global $wpdb;
+		$table   = $wpdb->prefix . 'ideaxperts_ea_store_identifiers';
+		$base    = $wpdb->prepare( "FROM {$table} WHERE run_id = %d AND identifier_type = 'upc'", $run_id ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$queries = array(
+			'upc_records'        => "SELECT COUNT(*) {$base}",
+			'owners_with_upc'    => "SELECT COUNT(DISTINCT wc_product_id,wc_variation_id) {$base}",
+			'duplicate_upcs'     => "SELECT COUNT(*) FROM (SELECT normalized_identifier {$base} GROUP BY normalized_identifier HAVING COUNT(DISTINCT wc_product_id,wc_variation_id) > 1) duplicate_upcs",
+			'conflicting_owners' => "SELECT COUNT(*) FROM (SELECT wc_product_id,wc_variation_id {$base} GROUP BY wc_product_id,wc_variation_id HAVING COUNT(DISTINCT normalized_identifier) > 1) conflicting_owners",
+		);
+		$result  = array();
+		foreach ( $queries as $key => $sql ) {
+			$value = $wpdb->get_var( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Prepared run ID and fixed aggregate queries.
+			if ( null === $value || ! empty( $wpdb->last_error ) ) {
+				return null;
+			}
+			$result[ $key ] = max( 0, (int) $value );
+		}
+		return $result;
+	}
+
+	/** @return array<string,int>|null */
+	public function review_summary( int $run_id ): ?array {
+		global $wpdb;
+		$table = $wpdb->prefix . 'ideaxperts_ea_dry_run_items';
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT COUNT(CASE WHEN classification = 'manual_review' OR (review_flags <> '[]' AND review_flags <> '') THEN 1 END) AS review_required, COUNT(CASE WHEN retail_price REGEXP '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$' AND map_price REGEXP '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$' AND retail_price + 0e0 < map_price + 0e0 THEN 1 END) AS retail_below_map FROM {$table} WHERE run_id = %d", $run_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $row ) && empty( $wpdb->last_error ) ? array_map( 'intval', $row ) : null;
+	}
+
 	private const RUN_FIELDS = array(
 		'status',
 		'completed_at',
 		'current_api_page',
+		'catalog_products_processed',
+		'catalog_total_products',
+		'catalog_total_pages',
+		'store_products_scanned',
+		'store_variations_scanned',
+		'store_missing_upcs',
+		'store_total_products',
+		'store_total_pages',
 		'current_store_page',
 		'products_inspected',
 		'variations_inspected',
@@ -181,23 +237,27 @@ final class DryRunRepository {
 		$ok          = $wpdb->insert(
 			$wpdb->prefix . 'ideaxperts_ea_dry_runs',
 			array(
-				'status'                  => 'pending',
-				'source_scope'            => 'local' === $environment ? 'local' : 'endless-aisles:' . $environment,
-				'environment'             => $environment,
-				'started_by'              => $user_id,
-				'started_at'              => $now,
-				'updated_at'              => $now,
-				'last_heartbeat_at'       => $now,
-				'current_api_page'        => 0,
-				'current_store_page'      => 0,
-				'products_inspected'      => 0,
-				'variations_inspected'    => 0,
-				'store_records_inspected' => 0,
-				'resume_cursor'           => '',
-				'claim_token'             => $claim_token,
-				'claim_generation'        => 1,
+				'status'                     => 'pending',
+				'source_scope'               => 'local' === $environment ? 'local' : 'endless-aisles:' . $environment,
+				'environment'                => $environment,
+				'started_by'                 => $user_id,
+				'started_at'                 => $now,
+				'updated_at'                 => $now,
+				'last_heartbeat_at'          => $now,
+				'current_api_page'           => 0,
+				'current_store_page'         => 0,
+				'products_inspected'         => 0,
+				'variations_inspected'       => 0,
+				'store_records_inspected'    => 0,
+				'resume_cursor'              => '',
+				'claim_token'                => $claim_token,
+				'claim_generation'           => 1,
+				'catalog_products_processed' => 0,
+				'store_products_scanned'     => 0,
+				'store_variations_scanned'   => 0,
+				'store_missing_upcs'         => 0,
 			),
-			array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%d' )
+			array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%d', '%d', '%d', '%d', '%d' )
 		);
 		return false === $ok ? 0 : (int) $wpdb->insert_id;
 	}

@@ -100,7 +100,9 @@ final class Admin {
 		$this->render_tabs( $tab );
 		if ( 'catalog' === $tab ) {
 			$this->catalog_admin->render();
-			$this->import_admin->render();
+			if ( $this->catalog_admin->schema_ready() ) {
+				$this->import_admin->render();
+			}
 		} elseif ( 'status' === $tab ) {
 			$this->render_status();
 		} elseif ( 'logs' === $tab ) {
@@ -213,6 +215,7 @@ final class Admin {
 	}
 
 	private function render_logs(): void {
+		$this->catalog_admin->render_operation_history();
 		echo '<p>' . esc_html__( 'Recent redacted integration logs. Retention is bounded to the latest 2,000 entries.', 'ideaxperts-endless-aisles' ) . '</p><table class="widefat striped"><thead><tr><th>' . esc_html__( 'Time (UTC)', 'ideaxperts-endless-aisles' ) . '</th><th>' . esc_html__( 'Level', 'ideaxperts-endless-aisles' ) . '</th><th>' . esc_html__( 'Message', 'ideaxperts-endless-aisles' ) . '</th><th>' . esc_html__( 'Context', 'ideaxperts-endless-aisles' ) . '</th></tr></thead><tbody>';
 		foreach ( $this->logger->recent() as $log ) {
 			echo '<tr><td>' . esc_html( $log->created_at ) . '</td><td>' . esc_html( $log->level ) . '</td><td>' . esc_html( $log->message ) . '</td><td><code>' . esc_html( $log->context ) . '</code></td></tr>';

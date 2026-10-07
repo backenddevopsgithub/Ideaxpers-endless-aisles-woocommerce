@@ -8,6 +8,7 @@
 namespace IdeaXperts\EndlessAisles;
 
 use IdeaXperts\EndlessAisles\Admin\Admin;
+use IdeaXperts\EndlessAisles\Admin\StatusRefresh;
 use IdeaXperts\EndlessAisles\Admin\CatalogDryRunAdmin;
 use IdeaXperts\EndlessAisles\Admin\CatalogImportAdmin;
 use IdeaXperts\EndlessAisles\API\CatalogService;
@@ -58,6 +59,12 @@ final class Plugin {
 		}
 
 		$this->register_services();
+		if ( StatusRefresh::requested() ) {
+			StatusRefresh::authorize();
+			// A status refresh must not migrate, schedule or reconcile background work.
+			$this->container->get( Admin::class )->register();
+			return;
+		}
 		( new Migrator() )->maybe_migrate();
 		$this->container->get( Admin::class )->register();
 		$this->container->get( InventoryScheduler::class )->register();

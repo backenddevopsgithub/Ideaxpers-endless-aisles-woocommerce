@@ -229,14 +229,19 @@ final class DryRunManager {
 				$page,
 				$records,
 				array(
-					'current_store_page'      => $page,
-					'products_inspected'      => (int) $run['products_inspected'] + (int) $result['products'],
-					'variations_inspected'    => (int) $run['variations_inspected'] + (int) $result['variations'],
-					'store_records_inspected' => (int) $run['store_records_inspected'] + (int) $result['products'] + (int) $result['variations'],
-					'resume_cursor'           => $more ? 'store:' . ( $page + 1 ) : ( $is_local ? '' : 'catalog:1' ),
-					'status'                  => $more ? 'scanning_store' : ( $is_local ? 'completed' : 'fetching_catalog' ),
-					'completed_at'            => $is_local && ! $more ? current_time( 'mysql', true ) : null,
-					'last_heartbeat_at'       => current_time( 'mysql', true ),
+					'current_store_page'       => $page,
+					'store_products_scanned'   => ! isset( $run['store_products_scanned'] ) && (int) $run['current_store_page'] > 0 ? null : (int) ( $run['store_products_scanned'] ?? 0 ) + $result['products'],
+					'store_variations_scanned' => ! isset( $run['store_variations_scanned'] ) && (int) $run['current_store_page'] > 0 ? null : (int) ( $run['store_variations_scanned'] ?? 0 ) + $result['variations'],
+					'store_missing_upcs'       => ! isset( $run['store_missing_upcs'] ) && (int) $run['current_store_page'] > 0 ? null : (int) ( $run['store_missing_upcs'] ?? 0 ) + $result['missing_upcs'],
+					'store_total_products'     => $result['total_products'],
+					'store_total_pages'        => $result['total_pages'],
+					'products_inspected'       => (int) $run['products_inspected'] + (int) $result['products'],
+					'variations_inspected'     => (int) $run['variations_inspected'] + (int) $result['variations'],
+					'store_records_inspected'  => (int) $run['store_records_inspected'] + (int) $result['products'] + (int) $result['variations'],
+					'resume_cursor'            => $more ? 'store:' . ( $page + 1 ) : ( $is_local ? '' : 'catalog:1' ),
+					'status'                   => $more ? 'scanning_store' : ( $is_local ? 'completed' : 'fetching_catalog' ),
+					'completed_at'             => $is_local && ! $more ? current_time( 'mysql', true ) : null,
+					'last_heartbeat_at'        => current_time( 'mysql', true ),
 				),
 				$is_local && ! $more ? null : array(
 					'action_type' => $more ? 'store' : 'catalog',
@@ -248,6 +253,14 @@ final class DryRunManager {
 				throw new RuntimeException();
 			}
 			if ( $is_local && ! $more ) {
+				$this->logger->log(
+					'info',
+					'Local UPC discovery completed.',
+					array(
+						'run_id'      => $run_id,
+						'environment' => 'local',
+					)
+				);
 				$this->runs->release_lock( $run_id, $token, $generation );
 				$this->purge_expired();
 			} else {
@@ -290,11 +303,14 @@ final class DryRunManager {
 				$built['items'],
 				$built['duplicates'],
 				array(
-					'current_api_page'  => $page,
-					'resume_cursor'     => null === $next ? '' : 'catalog:' . $next,
-					'status'            => null === $next ? 'completed' : 'fetching_catalog',
-					'completed_at'      => null === $next ? current_time( 'mysql', true ) : null,
-					'last_heartbeat_at' => current_time( 'mysql', true ),
+					'current_api_page'           => $page,
+					'catalog_products_processed' => ! isset( $run['catalog_products_processed'] ) && (int) $run['current_api_page'] > 0 ? null : (int) ( $run['catalog_products_processed'] ?? 0 ) + count( $result['products'] ),
+					'catalog_total_products'     => $result['total_products'],
+					'catalog_total_pages'        => $result['total_pages'],
+					'resume_cursor'              => null === $next ? '' : 'catalog:' . $next,
+					'status'                     => null === $next ? 'completed' : 'fetching_catalog',
+					'completed_at'               => null === $next ? current_time( 'mysql', true ) : null,
+					'last_heartbeat_at'          => current_time( 'mysql', true ),
 				),
 				null === $next ? null : array(
 					'action_type' => 'catalog',
@@ -306,6 +322,14 @@ final class DryRunManager {
 				throw new RuntimeException();
 			}
 			if ( null === $next ) {
+				$this->logger->log(
+					'info',
+					'Catalog dry run completed.',
+					array(
+						'run_id'      => $run_id,
+						'environment' => (string) $run['environment'],
+					)
+				);
 				$this->runs->release_lock( $run_id, $token, $generation );
 				$this->purge_expired();
 			} else {

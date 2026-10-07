@@ -22,6 +22,38 @@ final class DryRunRepositoryTest extends TestCase {
 		unset( $GLOBALS['wpdb'] );
 	}
 
+    public function test_discovery_summary_counts_owners_once_and_excludes_other_runs_and_skus(): void {
+        $rows = array( array( 1, 0, '123', 'upc' ), array( 1, 0, '123', 'upc' ), array( 1, 0, '456', 'upc' ), array( 2, 0, '123', 'upc' ), array( 2, 3, '789', 'upc' ), array( 4, 0, '111', 'sku' ) );
+        foreach ( $rows as $row ) {
+            $this->wpdb->insert( 'wp_ideaxperts_ea_store_identifiers', array( 'run_id' => 1, 'wc_product_id' => $row[0], 'wc_variation_id' => $row[1], 'normalized_identifier' => $row[2], 'identifier_type' => $row[3] ) );
+        }
+        $this->wpdb->insert( 'wp_ideaxperts_ea_store_identifiers', array( 'run_id' => 2, 'wc_product_id' => 5, 'wc_variation_id' => 0, 'normalized_identifier' => '123', 'identifier_type' => 'upc' ) );
+        self::assertSame( array( 'upc_records' => 5, 'owners_with_upc' => 3, 'duplicate_upcs' => 1, 'conflicting_owners' => 1 ), $this->runs->discovery_summary( 1 ) );
+        $this->wpdb->fail_read_contains = 'identifier_type';
+        self::assertNull( $this->runs->discovery_summary( 1 ) );
+    }
+
+    public function test_map_summary_agrees_with_price_inspector_for_numeric_strings(): void {
+        $this->wpdb->tables['wp_ideaxperts_ea_dry_run_items'] = array(
+            array( 'id' => 1, 'run_id' => 1, 'classification' => 'manual_review', 'review_flags' => '["suspicious_price"]', 'retail_price' => '1e1', 'map_price' => '20' ),
+            array( 'id' => 2, 'run_id' => 1, 'classification' => 'manual_review', 'review_flags' => '["suspicious_price"]', 'retail_price' => ' +9.5 ', 'map_price' => '10' ),
+        );
+        foreach ( $this->wpdb->tables['wp_ideaxperts_ea_dry_run_items'] as $row ) {
+            self::assertContains( 'retail_below_map', \IdeaXperts\EndlessAisles\Catalog\PriceInspector::warnings( array( 'price' => $row['retail_price'], 'minimum_advertised_price' => $row['map_price'] ) ) );
+        }
+        self::assertSame( 2, $this->runs->review_summary( 1 )['retail_below_map'] );
+    }
+    public function test_review_summary_counts_distinct_items_without_summing_overlapping_flags(): void {
+        $this->wpdb->tables['wp_ideaxperts_ea_dry_run_items'] = array(
+            array( 'run_id' => 1, 'classification' => 'manual_review', 'review_flags' => '["suspicious_price","duplicate_vendor_upc"]', 'retail_price' => '9.50', 'map_price' => '10' ),
+            array( 'run_id' => 1, 'classification' => 'new_product_candidate', 'review_flags' => '["discontinued"]', 'retail_price' => 'bad', 'map_price' => '20' ),
+            array( 'run_id' => 1, 'classification' => 'exact_upc_match', 'review_flags' => '[]', 'retail_price' => '30', 'map_price' => '20' ),
+            array( 'run_id' => 2, 'classification' => 'manual_review', 'review_flags' => '[]', 'retail_price' => '1', 'map_price' => '2' ),
+        );
+        self::assertSame( array( 'review_required' => 2, 'retail_below_map' => 1 ), $this->runs->review_summary( 1 ) );
+        $this->wpdb->fail_read_contains = 'AS review_required';
+        self::assertNull( $this->runs->review_summary( 1 ) );
+    }
 	public function test_mappings_require_exact_product_and_option_identity(): void {
 		$this->wpdb->insert(
 			'wp_ideaxperts_ea_mappings',

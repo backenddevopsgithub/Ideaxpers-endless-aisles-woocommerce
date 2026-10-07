@@ -360,6 +360,24 @@ final class DryRunMemoryWpdb {
 			$this->last_error = 'Injected read failure.';
 			return null;
 		}
+		if ( str_contains( $sql, 'ideaxperts_ea_store_identifiers' ) && ( str_contains( $sql, 'COUNT(DISTINCT' ) || str_contains( $sql, 'duplicate_upcs' ) || str_contains( $sql, 'conflicting_owners' ) ) ) {
+			preg_match( '/run_id = (\d+)/', $sql, $match );
+			$rows = array_filter( $this->tables['wp_ideaxperts_ea_store_identifiers'], static fn( array $row ): bool => (int) $row['run_id'] === (int) $match[1] && 'upc' === $row['identifier_type'] );
+			$owners = array();
+			$upcs = array();
+			foreach ( $rows as $row ) {
+				$owner = $row['wc_product_id'] . ':' . $row['wc_variation_id'];
+				$owners[ $owner ][ $row['normalized_identifier'] ] = true;
+				$upcs[ $row['normalized_identifier'] ][ $owner ] = true;
+			}
+			if ( str_contains( $sql, 'duplicate_upcs' ) ) {
+				return count( array_filter( $upcs, static fn( array $values ): bool => count( $values ) > 1 ) );
+			}
+			if ( str_contains( $sql, 'conflicting_owners' ) ) {
+				return count( array_filter( $owners, static fn( array $values ): bool => count( $values ) > 1 ) );
+			}
+			return count( $owners );
+		}
 		if ( str_contains( $sql, 'COUNT(*)' ) ) {
 			return count( $this->select_rows( $sql ) );
 		}
@@ -383,11 +401,41 @@ final class DryRunMemoryWpdb {
 			return null;
 		}
 		$rows = $this->select_rows( $sql );
+		if ( str_contains( $sql, 'AS review_required' ) ) {
+			$review = 0;
+			$below = 0;
+			foreach ( $rows as $row ) {
+				$review += 'manual_review' === ( $row['classification'] ?? '' ) || ! in_array( $row['review_flags'] ?? '', array( '[]', '' ), true ) ? 1 : 0;
+				$retail = (string) ( $row['retail_price'] ?? '' );
+				$map = (string) ( $row['map_price'] ?? '' );
+				$below += is_numeric( $retail ) && is_numeric( $map ) && (float) $retail < (float) $map ? 1 : 0;
+			}
+			return array( 'review_required' => $review, 'retail_below_map' => $below );
+		}
 		return $rows[0] ?? null;
 	}
 
 	/** @return list<array<string,mixed>> */
 	public function get_results( string $sql, mixed $output = null ): array {
+		if ( str_contains( $sql, 'information_schema.' ) ) {
+			$rows = array();
+			foreach ( \IdeaXperts\EndlessAisles\Database\Schema::table_names( $this->prefix ) as $table ) {
+				if ( str_contains( $sql, 'information_schema.TABLES' ) ) {
+					$rows[] = array( 'TABLE_NAME' => $table, 'ENGINE' => 'InnoDB' );
+				} elseif ( str_contains( $sql, 'information_schema.COLUMNS' ) ) {
+					foreach ( \IdeaXperts\EndlessAisles\Database\Schema::required_columns( $this->prefix )[ $table ] as $column ) {
+						$rows[] = array( 'TABLE_NAME' => $table, 'COLUMN_NAME' => $column );
+					}
+				} else {
+					foreach ( \IdeaXperts\EndlessAisles\Database\Schema::required_indexes( $this->prefix )[ $table ] ?? array() as $index => $definition ) {
+						foreach ( $definition['columns'] as $offset => $column ) {
+							$rows[] = array( 'TABLE_NAME' => $table, 'INDEX_NAME' => $index, 'NON_UNIQUE' => $definition['unique'] ? 0 : 1, 'SEQ_IN_INDEX' => $offset + 1, 'COLUMN_NAME' => $column );
+						}
+					}
+				}
+			}
+			return $rows;
+		}
 		if ( str_contains( $sql, 'ideaxperts_ea_mappings' ) && str_contains( $sql, 'FOR UPDATE' ) && is_callable( $this->before_mapping_lock ) ) {
 			$callback = $this->before_mapping_lock;
 			$this->before_mapping_lock = null;

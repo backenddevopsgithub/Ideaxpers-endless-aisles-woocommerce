@@ -2,6 +2,7 @@
 namespace IdeaXperts\EndlessAisles\Admin;
 
 use IdeaXperts\EndlessAisles\Database\DryRunRepository;
+use IdeaXperts\EndlessAisles\Database\Migrator;
 use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Import\ApprovalManifest;
 use IdeaXperts\EndlessAisles\Import\ImportManager;
@@ -25,6 +26,9 @@ final class CatalogImportAdmin {
 
 	public function start_production_preview(): void {
 		$this->authorize( 'ideaxperts_ea_production_preview' );
+		if ( ! ( new Migrator() )->ready() ) {
+			wp_die( esc_html__( 'Database upgrade required / incomplete. Production Preview cannot start.', 'ideaxperts-endless-aisles' ) );
+		}
 		try {
 			$this->dry_run_manager->start_production_preview( get_current_user_id() );
 		} catch ( \RuntimeException ) {
@@ -129,7 +133,7 @@ final class CatalogImportAdmin {
 		echo '<h2>Production catalog preview</h2><p>Read-only vendor fetch and live catalog inspection. No product saves, mappings, ownership reservations, or creation counters. Review one new Draft per Production approval.</p>';
 		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="ideaxperts_ea_production_preview">';
 		wp_nonce_field( 'ideaxperts_ea_production_preview' );
-		submit_button( 'Start read-only Production preview', 'secondary' );
+		submit_button( $this->dry_runs->active_id() ? 'Dry run in progress' : 'Start read-only Production preview', 'secondary', 'submit', true, $this->dry_runs->active_id() ? array( 'disabled' => 'disabled' ) : array() );
 		echo '</form>';
 		$this->render_confirmation();
 		global $wpdb;

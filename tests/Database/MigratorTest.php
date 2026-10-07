@@ -12,6 +12,89 @@ final class MigratorTest extends TestCase {
 		$GLOBALS['ea_test_options'] = array();
 	}
 
+    public function test_populated_three_progress_upgrade_preserves_rows_options_and_is_repeatable(): void {
+        $wpdb = new MigrationWpdb();
+        $wpdb->enable_legacy_upgrade_fixture();
+        $columns = array( 'catalog_products_processed', 'catalog_total_products', 'catalog_total_pages', 'store_products_scanned', 'store_variations_scanned', 'store_missing_upcs', 'store_total_products', 'store_total_pages' );
+        $wpdb->absent_progress_columns = array_fill_keys( $columns, true );
+        $GLOBALS['wpdb'] = $wpdb;
+        $GLOBALS['ea_test_options'] = array( 'ideaxperts_ea_schema_version' => '3.0.0', 'ideaxperts_ea_schema_integrity' => '3.0.0', 'ideaxperts_ea_settings' => array( 'enabled' => 'yes', 'environment' => 'qa' ), 'ideaxperts_ea_credentials' => array( 'qa' => 'test-encrypted-value' ) );
+        $rows = array( $wpdb->legacy_runs, $wpdb->legacy_mappings, $wpdb->legacy_actions, $wpdb->legacy_items, $wpdb->legacy_reservations );
+        $options = $GLOBALS['ea_test_options'];
+        $calls = 0;
+        $migrator = new Migrator( static function ( string $sql ) use ( $wpdb, &$calls ): void {
+            ++$calls;
+            if ( str_contains( $sql, 'CREATE TABLE wp_ideaxperts_ea_dry_runs (' ) ) {
+                foreach ( array_keys( $wpdb->absent_progress_columns ) as $column ) {
+                    if ( ! str_contains( $sql, $column . ' ' ) || ! preg_match( '/' . $column . ' [^\n]+ NULL/', $sql ) ) { throw new \LogicException( 'Missing nullable progress DDL' ); }
+                    unset( $wpdb->absent_progress_columns[ $column ] );
+                }
+            }
+        } );
+        self::assertTrue( $migrator->migrate() );
+        self::assertSame( array(), $wpdb->absent_progress_columns );
+        self::assertSame( $rows, array( $wpdb->legacy_runs, $wpdb->legacy_mappings, $wpdb->legacy_actions, $wpdb->legacy_items, $wpdb->legacy_reservations ) );
+        self::assertSame( $options['ideaxperts_ea_settings'], get_option( 'ideaxperts_ea_settings' ) );
+        self::assertSame( $options['ideaxperts_ea_credentials'], get_option( 'ideaxperts_ea_credentials' ) );
+        self::assertTrue( $migrator->migrate() );
+        self::assertSame( 30, $calls );
+        self::assertSame( $rows, array( $wpdb->legacy_runs, $wpdb->legacy_mappings, $wpdb->legacy_actions, $wpdb->legacy_items, $wpdb->legacy_reservations ) );
+        foreach ( $wpdb->queries as $query ) { self::assertStringStartsWith( 'SELECT ', $query ); }
+    }
+
+    public function test_partial_progress_ddl_failure_preserves_version_and_retry_finishes(): void {
+        $wpdb = new MigrationWpdb();
+        $wpdb->absent_progress_columns = array_fill_keys( array( 'catalog_products_processed', 'catalog_total_products', 'store_products_scanned' ), true );
+        $GLOBALS['wpdb'] = $wpdb;
+        $GLOBALS['ea_test_options'] = array( 'ideaxperts_ea_schema_version' => '3.0.0', 'ideaxperts_ea_schema_integrity' => '3.0.0' );
+        $fail = true;
+        $migrator = new Migrator( static function ( string $sql ) use ( $wpdb, &$fail ): void {
+            $wpdb->last_error = '';
+            if ( str_contains( $sql, 'CREATE TABLE wp_ideaxperts_ea_dry_runs (' ) ) {
+                if ( $fail ) {
+                    unset( $wpdb->absent_progress_columns['catalog_products_processed'] );
+                    $wpdb->last_error = 'Injected partial ALTER failure.';
+                } else {
+                    $wpdb->absent_progress_columns = array();
+                }
+            }
+        } );
+        self::assertFalse( $migrator->migrate() );
+        self::assertSame( '3.0.0', get_option( 'ideaxperts_ea_schema_version' ) );
+        self::assertSame( '3.0.0', get_option( 'ideaxperts_ea_schema_integrity' ) );
+        self::assertCount( 2, $wpdb->absent_progress_columns );
+        self::assertFalse( $migrator->ready() );
+        $fail = false;
+        self::assertTrue( $migrator->migrate() );
+        self::assertTrue( $migrator->ready() );
+        self::assertSame( Schema::VERSION, get_option( 'ideaxperts_ea_schema_version' ) );
+    }
+
+    public function test_three_missing_table_repair_keeps_existing_rows(): void {
+        $wpdb = new MigrationWpdb();
+        $wpdb->enable_legacy_upgrade_fixture();
+        $wpdb->absent_upgrade_tables['wp_ideaxperts_ea_store_identifier_reservations'] = true;
+        $GLOBALS['wpdb'] = $wpdb;
+        $GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] = '3.0.0';
+        $rows = array( $wpdb->legacy_runs, $wpdb->legacy_mappings, $wpdb->legacy_actions );
+        $migrator = new Migrator( static function ( string $sql ) use ( $wpdb ): void {
+            preg_match( '/CREATE TABLE ([a-z_]+)/', $sql, $matches );
+            unset( $wpdb->absent_upgrade_tables[ $matches[1] ] );
+        } );
+        self::assertTrue( $migrator->migrate() );
+        self::assertSame( $rows, array( $wpdb->legacy_runs, $wpdb->legacy_mappings, $wpdb->legacy_actions ) );
+        self::assertSame( array(), $wpdb->absent_upgrade_tables );
+    }
+
+    public function test_three_missing_table_column_or_index_never_advances_version(): void {
+        foreach ( array( new MigrationWpdb( 'wp_ideaxperts_ea_dry_runs' ), new MigrationWpdb( '', 'store_missing_upcs' ), new MigrationWpdb( '', '', '', false, true, 'logical_action' ) ) as $wpdb ) {
+            $GLOBALS['wpdb'] = $wpdb;
+            $GLOBALS['ea_test_options'] = array( 'ideaxperts_ea_schema_version' => '3.0.0', 'ideaxperts_ea_schema_integrity' => '3.0.0' );
+            self::assertFalse( ( new Migrator( static function ( string $sql ): void {} ) )->migrate() );
+            self::assertSame( '3.0.0', get_option( 'ideaxperts_ea_schema_version' ) );
+            self::assertArrayNotHasKey( 'ideaxperts_ea_schema_integrity', $GLOBALS['ea_test_options'] );
+        }
+    }
 	public function test_repeated_schema_creation_is_idempotent_and_records_version(): void {
 		$wpdb            = new MigrationWpdb();
 		$GLOBALS['wpdb'] = $wpdb;
@@ -26,6 +109,36 @@ final class MigratorTest extends TestCase {
 		self::assertTrue( $migrator->migrate() );
 		self::assertSame( 30, $calls );
 		self::assertSame( Schema::VERSION, $GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] );
+	}
+
+	public function test_readiness_is_read_only_and_verifies_actual_schema_not_just_markers(): void {
+		$GLOBALS['ea_test_options'] = array( 'ideaxperts_ea_schema_version' => Schema::VERSION, 'ideaxperts_ea_schema_integrity' => Schema::VERSION );
+		$options = $GLOBALS['ea_test_options'];
+		$GLOBALS['wpdb'] = new MigrationWpdb();
+		self::assertTrue( ( new Migrator() )->ready() );
+		self::assertSame( $options, $GLOBALS['ea_test_options'] );
+		foreach ( $GLOBALS['wpdb']->queries as $query ) {
+			self::assertStringStartsWith( 'SELECT ', $query );
+		}
+		$GLOBALS['wpdb'] = new MigrationWpdb( '', 'store_products_scanned' );
+		self::assertFalse( ( new Migrator() )->ready() );
+		self::assertSame( $options, $GLOBALS['ea_test_options'] );
+		$GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] = '1.0.0';
+		self::assertFalse( ( new Migrator() )->ready() );
+	}
+
+	public function test_three_upgrade_adds_nullable_progress_fields_without_backfilling_legacy_counts(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] = '3.0.0';
+		$GLOBALS['wpdb'] = new MigrationWpdb();
+		$sqls = array();
+		$migrator = new Migrator( static function ( string $sql ) use ( &$sqls ): void { $sqls[] = $sql; } );
+		self::assertTrue( $migrator->migrate() );
+		self::assertSame( Schema::VERSION, get_option( 'ideaxperts_ea_schema_version' ) );
+		self::assertStringContainsString( 'catalog_products_processed bigint(20) unsigned NULL', implode( "\n", $sqls ) );
+		self::assertStringContainsString( 'store_products_scanned bigint(20) unsigned NULL', implode( "\n", $sqls ) );
+		foreach ( $GLOBALS['wpdb']->queries as $query ) {
+			self::assertStringNotContainsString( 'UPDATE ', $query );
+		}
 	}
 
 	public function test_failed_table_verification_does_not_advance_schema_version(): void {
@@ -102,7 +215,10 @@ final class MigratorTest extends TestCase {
 			}
 		) )->maybe_migrate();
 		self::assertSame( 0, $calls );
-		self::assertSame( array(), $wpdb->queries );
+		self::assertCount( 3, $wpdb->queries );
+		foreach ( $wpdb->queries as $query ) {
+			self::assertStringStartsWith( 'SELECT ', $query );
+		}
 		self::assertSame( Schema::VERSION, get_option( 'ideaxperts_ea_schema_integrity' ) );
 	}
 
@@ -271,6 +387,46 @@ final class MigratorTest extends TestCase {
 		self::assertTrue( $migrator->migrate() );
 	}
 
+	public function test_one_upgrade_creates_missing_catalog_tables_before_backfill(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] = '1.0.0';
+		$wpdb = new MigrationWpdb();
+		$wpdb->enable_legacy_upgrade_fixture();
+		foreach ( array( 'dry_runs', 'dry_run_items', 'dry_run_actions' ) as $suffix ) {
+			$wpdb->absent_upgrade_tables[ 'wp_ideaxperts_ea_' . $suffix ] = true;
+		}
+		$wpdb->legacy_runs = $wpdb->legacy_items = $wpdb->legacy_actions = array();
+		$GLOBALS['wpdb'] = $wpdb;
+		$migrator = new Migrator(
+			static function ( string $sql ) use ( $wpdb ): void {
+				preg_match( '/CREATE TABLE ([a-z_]+)/', $sql, $matches );
+				unset( $wpdb->absent_upgrade_tables[ $matches[1] ] );
+			}
+		);
+
+		self::assertTrue( $migrator->migrate() );
+		self::assertSame( array(), $wpdb->absent_upgrade_tables );
+		self::assertSame( Schema::VERSION, get_option( 'ideaxperts_ea_schema_version' ) );
+		self::assertSame( Schema::VERSION, get_option( 'ideaxperts_ea_schema_integrity' ) );
+		self::assertSame( 'endless-aisles:qa', $wpdb->legacy_mappings[0]['source_scope'] );
+		self::assertTrue( $migrator->migrate() );
+	}
+
+	public function test_one_upgrade_does_not_advance_when_missing_table_creation_fails(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] = '1.0.0';
+		$wpdb = new MigrationWpdb();
+		$wpdb->absent_upgrade_tables['wp_ideaxperts_ea_dry_runs'] = true;
+		$GLOBALS['wpdb'] = $wpdb;
+		$migrator = new Migrator(
+			static function ( string $sql ) use ( $wpdb ): void {
+				$wpdb->last_error = 'Injected table creation failure.';
+			}
+		);
+
+		self::assertFalse( $migrator->migrate() );
+		self::assertSame( '1.0.0', get_option( 'ideaxperts_ea_schema_version' ) );
+		self::assertArrayNotHasKey( 'ideaxperts_ea_schema_integrity', $GLOBALS['ea_test_options'] );
+	}
+
 	public function test_populated_upgrade_fails_closed_on_duplicate_or_backfill_failure(): void {
 		$GLOBALS['ea_test_options']['ideaxperts_ea_schema_version'] = '2.3.0';
 		$duplicate = new MigrationWpdb();
@@ -303,7 +459,12 @@ final class MigrationWpdb {
 	public array $legacy_runs               = array();
 	public array $legacy_items              = array();
 	public array $legacy_actions            = array();
+	public array $legacy_reservations       = array();
 	public string $upgrade_failure_contains = '';
+	/** @var array<string,bool> */
+	public array $absent_upgrade_tables = array();
+	/** @var array<string,bool> */
+	public array $absent_progress_columns = array();
 	private bool $legacy_upgrade            = false;
 	private bool $legacy_index_replaced     = false;
 
@@ -321,6 +482,7 @@ final class MigrationWpdb {
 		private readonly ?bool $malformed_unique = null
 	) {}
 	public function enable_legacy_upgrade_fixture( bool $duplicate = false ): void {
+		$this->legacy_reservations = array( array( 'id' => 40, 'source_scope' => 'endless-aisles:production', 'environment' => 'production', 'owning_import_item_id' => 9, 'reservation_status' => 'reserved', 'owner_token' => 'test-owner' ) );
 		$this->legacy_upgrade  = true;
 		$this->legacy_mappings = array(
 			array(
@@ -373,7 +535,11 @@ final class MigrationWpdb {
 		return $query;
 	}
 	public function get_var( string $query ): ?string {
+		$this->queries[] = $query;
 		$this->last_query = $query;
+		if ( str_contains( $query, 'information_schema.TABLES' ) && isset( $this->absent_upgrade_tables[ $this->prepared_values[0] ?? '' ] ) ) {
+			return null;
+		}
 		if ( $this->legacy_upgrade && str_contains( $query, 'duplicate_mappings' ) ) {
 			$seen = array();
 			foreach ( $this->legacy_mappings as $row ) {
@@ -413,6 +579,7 @@ final class MigrationWpdb {
 	}
 	/** @return list<array<string,string>> */
 	public function get_results( string $query, mixed $output = null ): array {
+		$this->queries[] = $query;
 		if ( $this->legacy_upgrade && str_starts_with( $query, 'SELECT COLUMN_NAME FROM information_schema.STATISTICS' ) ) {
 			$columns = $this->legacy_index_replaced ? array( 'source_scope', 'ea_product_id', 'ea_option_id' ) : array( 'ea_product_id', 'ea_option_id' );
 			return array_map( static fn( string $column ): array => array( 'COLUMN_NAME' => $column ), $columns );
@@ -420,7 +587,7 @@ final class MigrationWpdb {
 		if ( str_contains( $query, 'information_schema.TABLES' ) ) {
 			$rows = array();
 			foreach ( Schema::table_names( $this->prefix ) as $table ) {
-				if ( $this->missing_table === $table ) {
+				if ( $this->missing_table === $table || isset( $this->absent_upgrade_tables[ $table ] ) ) {
 					continue;
 				}
 				$rows[] = array(
@@ -434,6 +601,9 @@ final class MigrationWpdb {
 			$rows = array();
 			foreach ( Schema::required_columns( $this->prefix ) as $table => $columns ) {
 				foreach ( $columns as $column ) {
+					if ( isset( $this->absent_progress_columns[ $column ] ) ) {
+						continue;
+					}
 					if ( $this->missing_column !== $column || ( '' !== $this->missing_column_table && $this->missing_column_table !== $table ) ) {
 						$rows[] = array(
 							'TABLE_NAME'  => $table,
@@ -468,6 +638,12 @@ final class MigrationWpdb {
 	public function query( string $query ): int|false {
 		$this->last_query = $query;
 		$this->queries[]  = $query;
+		foreach ( array_keys( $this->absent_upgrade_tables ) as $table ) {
+			if ( str_contains( $query, $table ) ) {
+				$this->last_error = 'Table does not exist.';
+				return false;
+			}
+		}
 		if ( '' !== $this->upgrade_failure_contains && str_contains( $query, $this->upgrade_failure_contains ) ) {
 			$this->last_error = 'Injected upgrade failure.';
 			return false;

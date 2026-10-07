@@ -12,7 +12,7 @@ final class StoreCatalogScanner {
 
 	public function __construct( private readonly SettingsRepository $settings, private readonly DryRunRepository $runs ) {}
 
-	/** @return array{products:int,variations:int,has_more:bool} */
+	/** @return array{products:int,variations:int,missing_upcs:int,has_more:bool,total_products:int|null,total_pages:int|null} */
 	public function scan_batch( int $run_id, int $page, string $claim_token = '' ): array {
 		$result  = $this->collect_batch( $page );
 		$records = $result['records'];
@@ -23,7 +23,7 @@ final class StoreCatalogScanner {
 		return $result;
 	}
 
-	/** @return array{products:int,variations:int,has_more:bool,records:list<array<string,mixed>>} */
+	/** @return array{products:int,variations:int,missing_upcs:int,has_more:bool,total_products:int|null,total_pages:int|null,records:list<array<string,mixed>>} */
 	public function collect_batch( int $page ): array {
 		// WooCommerce supplies these catalog functions after the dependency gate.
 		$result   = \wc_get_products(
@@ -38,9 +38,12 @@ final class StoreCatalogScanner {
 		$products = is_object( $result ) && isset( $result->products ) && is_array( $result->products ) ? $result->products : array();
 		$pages    = is_object( $result ) && isset( $result->max_num_pages ) ? (int) $result->max_num_pages : $page;
 		$counts   = array(
-			'products'   => 0,
-			'variations' => 0,
-			'has_more'   => $page < $pages,
+			'products'       => 0,
+			'variations'     => 0,
+			'missing_upcs'   => 0,
+			'has_more'       => $page < $pages,
+			'total_products' => is_object( $result ) && isset( $result->total ) && is_numeric( $result->total ) ? max( 0, (int) $result->total ) : null,
+			'total_pages'    => is_object( $result ) && isset( $result->max_num_pages ) ? max( 0, (int) $result->max_num_pages ) : null,
 		);
 		$records  = array();
 		foreach ( $products as $product ) {
@@ -48,14 +51,18 @@ final class StoreCatalogScanner {
 				continue;
 			}
 			++$counts['products'];
-			$records = array_merge( $records, $this->capture( $product, 0 ) );
+			$captured                = $this->capture( $product, 0 );
+			$counts['missing_upcs'] += in_array( 'upc', array_column( $captured, 'identifier_type' ), true ) ? 0 : 1;
+			$records                 = array_merge( $records, $captured );
 			if ( method_exists( $product, 'get_children' ) ) {
 				foreach ( array_chunk( $product->get_children(), self::BATCH_SIZE ) as $child_ids ) {
 					foreach ( $child_ids as $child_id ) {
 						$variation = \wc_get_product( $child_id );
 						if ( $variation ) {
 							++$counts['variations'];
-							$records = array_merge( $records, $this->capture( $variation, method_exists( $product, 'get_id' ) ? (int) $product->get_id() : 0 ) );
+							$captured                = $this->capture( $variation, method_exists( $product, 'get_id' ) ? (int) $product->get_id() : 0 );
+							$counts['missing_upcs'] += in_array( 'upc', array_column( $captured, 'identifier_type' ), true ) ? 0 : 1;
+							$records                 = array_merge( $records, $captured );
 						}
 					}
 				}

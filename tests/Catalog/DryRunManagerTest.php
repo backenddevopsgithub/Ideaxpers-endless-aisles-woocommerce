@@ -873,6 +873,93 @@ final class DryRunManagerTest extends TestCase {
 		self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_mappings'] );
 	}
 
+    public function test_catalog_progress_commits_with_page_and_repeated_callback_cannot_inflate_it(): void {
+        $responses = array();
+        for ( $page = 1; $page <= 2; ++$page ) {
+            $responses[] = array( 'current_page' => $page, 'per_page' => 10, 'total' => 2, 'last_page' => 2, 'next_page_url' => 1 === $page ? '/api/products?page=2&per_page=10' : null, 'data' => array( (object) array( 'id' => 'p' . $page, 'sizes' => array( (object) array( 'id' => 'o' . $page, 'upc' => '00123456789' . $page ) ) ) ) );
+        }
+        $manager = $this->manager( new SequenceClient( $responses ) );
+        $id = $manager->start( 9 );
+        $this->run_next_action( $manager );
+        $action = array_shift( $GLOBALS['ea_action_queue'] );
+        $manager->catalog_page( ...$action['args'] );
+        $run = $this->runs->run( $id );
+        self::assertSame( 1, (int) $run['catalog_products_processed'] );
+        self::assertSame( 2, (int) $run['catalog_total_products'] );
+        self::assertSame( 2, (int) $run['catalog_total_pages'] );
+        self::assertSame( 'fetching_catalog', $run['status'] );
+        $manager->catalog_page( ...$action['args'] );
+        self::assertSame( 1, (int) $this->runs->run( $id )['catalog_products_processed'] );
+        self::assertCount( 1, $GLOBALS['ea_action_queue'] );
+        $this->run_next_action( $manager );
+        $run = $this->runs->run( $id );
+        self::assertSame( 2, (int) $run['catalog_products_processed'] );
+        self::assertSame( 'completed', $run['status'] );
+        self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+    }
+
+    public function test_page_failure_does_not_commit_observability_counters(): void {
+        $client = new SequenceClient( array( array( 'current_page' => 1, 'per_page' => 10, 'total' => 1, 'last_page' => 1, 'next_page_url' => null, 'data' => array( (object) array( 'id' => 'p', 'sizes' => array( (object) array( 'id' => 'o', 'upc' => '123' ) ) ) ) ) ) );
+        $manager = $this->manager( $client );
+        $id = $manager->start( 9 );
+        $this->run_next_action( $manager );
+        $this->wpdb->fail_operation = 'replace';
+        $this->run_next_action( $manager );
+        $run = $this->runs->run( $id );
+        self::assertSame( 0, (int) $run['catalog_products_processed'] );
+        self::assertSame( 0, (int) $run['current_api_page'] );
+        self::assertArrayNotHasKey( 'catalog_total_products', $run );
+        self::assertSame( array(), $this->runs->items( $id ) );
+        self::assertSame( 'failed', $run['status'] );
+    }
+
+    public function test_local_scan_tracks_missing_identifier_objects_and_replay_is_idempotent(): void {
+        $GLOBALS['ea_wc_products'] = array( new ReadOnlyProduct( 1, 'simple', 'publish', 'Empty', '', '' ) );
+        $manager = $this->manager();
+        $id = $manager->start_local_discovery( 9 );
+        $action = array_shift( $GLOBALS['ea_action_queue'] );
+        $manager->store_batch( ...$action['args'] );
+        $manager->store_batch( ...$action['args'] );
+        $run = $this->runs->run( $id );
+        self::assertSame( 1, (int) $run['store_products_scanned'] );
+        self::assertSame( 0, (int) $run['products_inspected'] );
+        self::assertSame( 1, (int) $run['store_total_pages'] );
+        self::assertSame( 'completed', $run['status'] );
+        self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+    }
+    public function test_cancellation_preserves_committed_progress_and_fences_next_callback(): void {
+        $response = array( 'current_page' => 1, 'per_page' => 10, 'total' => 2, 'last_page' => 2, 'next_page_url' => '/api/products?page=2&per_page=10', 'data' => array( (object) array( 'id' => 'p', 'sizes' => array( (object) array( 'id' => 'o', 'upc' => '001234567890' ) ) ) ) );
+        $client = new SequenceClient( array( $response ) );
+        $manager = $this->manager( $client );
+        $id = $manager->start( 9 );
+        $this->run_next_action( $manager );
+        $this->run_next_action( $manager );
+        $next = $GLOBALS['ea_action_queue'][0];
+        self::assertTrue( $manager->cancel( $id, $this->runs->claim_generation( $id ) ) );
+        $before = $this->runs->run( $id );
+        $manager->catalog_page( ...$next['args'] );
+        self::assertSame( $before, $this->runs->run( $id ) );
+        self::assertSame( 'cancelled', $before['status'] );
+        self::assertSame( 1, (int) $before['catalog_products_processed'] );
+        self::assertSame( 1, (int) $before['current_api_page'] );
+        self::assertCount( 1, $client->requests );
+        self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+    }
+
+    public function test_progress_update_failure_rolls_back_item_writes_and_page_cursor(): void {
+        $response = array( 'current_page' => 1, 'per_page' => 10, 'total' => 1, 'last_page' => 1, 'next_page_url' => null, 'data' => array( (object) array( 'id' => 'p', 'sizes' => array( (object) array( 'id' => 'o', 'upc' => '001234567890' ) ) ) ) );
+        $manager = $this->manager( new SequenceClient( array( $response ) ) );
+        $id = $manager->start( 9 );
+        $this->run_next_action( $manager );
+        $this->wpdb->fail_update_table_contains = 'ideaxperts_ea_dry_runs';
+        $this->run_next_action( $manager );
+        $run = $this->runs->run( $id );
+        self::assertSame( 0, (int) $run['catalog_products_processed'] );
+        self::assertSame( 0, (int) $run['current_api_page'] );
+        self::assertSame( array(), $this->runs->items( $id ) );
+        self::assertSame( 'failed', $run['status'] );
+        self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+    }
 	private function manager( ?SequenceClient $client = null ): DryRunManager {
 		$client  = $client ?? new SequenceClient( array() );
 		$catalog = new CatalogService( $this->settings, new BaseUrlResolver(), new DatabaseLogger(), static fn(): SequenceClient => $client );

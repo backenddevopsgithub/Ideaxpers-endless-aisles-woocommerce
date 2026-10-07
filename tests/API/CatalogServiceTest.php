@@ -33,6 +33,17 @@ final class CatalogServiceTest extends TestCase {
 		self::assertSame( array( array( 'GET', '/api/products?page=1&per_page=10' ) ), $client->requests );
 	}
 
+	public function test_totals_are_exposed_only_when_valid_and_present(): void {
+		foreach ( array( array( 100, 10 ), array( null, null ), array( -1, 0 ), array( '100', '10' ) ) as $totals ) {
+			$response = $this->pageResponse();
+			$response['total'] = $totals[0];
+			$response['last_page'] = $totals[1];
+			$page = $this->service( new SequenceClient( array( $response ) ) )->page( 1 );
+			self::assertSame( is_int( $totals[0] ) && $totals[0] >= 0 ? $totals[0] : null, $page['total_products'] );
+			self::assertSame( is_int( $totals[1] ) && $totals[1] >= 1 ? $totals[1] : null, $page['total_pages'] );
+		}
+	}
+
 	public function test_numeric_vendor_upc_is_preserved_as_a_json_number(): void {
 		$client = new SequenceClient(
 			array(
