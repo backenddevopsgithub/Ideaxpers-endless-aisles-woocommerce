@@ -56,6 +56,16 @@ final class LiveCatalogStateProviderTest extends TestCase {
 		self::assertNotSame( $before, $after );
 	}
 
+	public function test_identifier_lookup_uses_registered_wordpress_statuses_without_a_woocommerce_status_helper(): void {
+		self::assertFalse( function_exists( 'wc_get_product_statuses' ) );
+		$this->provider->fingerprint( $this->item, 'endless-aisles:production', 'production', true );
+		$queries = array_values( array_filter( $GLOBALS['ea_wc_reads'], static fn( array $read ): bool => 'wc_get_products' === $read[0] ) );
+		self::assertNotEmpty( $queries );
+		foreach ( $queries as $query ) {
+			self::assertSame( array_keys( get_post_stati() ), $query[1]['status'] );
+		}
+	}
+
 	/** @return array<string,array{callable():void}> */
 	public static function catalogMutations(): array {
 		return array(

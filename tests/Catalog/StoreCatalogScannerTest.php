@@ -54,6 +54,21 @@ final class StoreCatalogScannerTest extends TestCase {
 		}
 	}
 
+	public function test_collect_batch_uses_registered_wordpress_statuses_without_a_woocommerce_status_helper(): void {
+		// Staging WooCommerce 10.7.0 does not provide wc_get_product_statuses().
+		self::assertFalse( function_exists( 'wc_get_product_statuses' ) );
+		$before  = $GLOBALS['wpdb']->tables;
+		$scanner = new StoreCatalogScanner( new SettingsRepository(), new DryRunRepository() );
+		$result  = $scanner->collect_batch( 1 );
+		self::assertSame( 1, $result['products'] );
+		self::assertSame( 1, $result['variations'] );
+		self::assertCount( 2, $result['records'] );
+		self::assertSame( array_keys( get_post_stati() ), $GLOBALS['ea_wc_reads'][0][1]['status'] );
+		self::assertContains( 'draft', $GLOBALS['ea_wc_reads'][0][1]['status'] );
+		self::assertSame( $before, $GLOBALS['wpdb']->tables );
+		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+	}
+
 	public function test_two_sources_on_one_variation_are_one_store_identity(): void {
 		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['upc_meta_keys'] = array( 'upc' );
 		$variation = new ReadOnlyProduct( 11, 'variation', 'publish', 'Widget Blue', '001234567891', '', array(), array( 'upc' => '001234567891' ) );

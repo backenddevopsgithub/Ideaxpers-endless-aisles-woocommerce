@@ -122,7 +122,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 						'paginate' => true,
 						'return'   => 'objects',
 						'type'     => $types,
-						'status'   => array_keys( \wc_get_product_statuses() ),
+						'status'   => array_keys( \get_post_stati() ),
 					)
 				);
 				$products = is_object( $result ) && isset( $result->products ) && is_array( $result->products ) ? $result->products : array();
