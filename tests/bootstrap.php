@@ -277,6 +277,7 @@ function wc_get_products( array $args ): object {
 	}
 	return (object) array(
 		'products'      => $products,
+		'total'         => $GLOBALS['ea_wc_total'] ?? null,
 		'max_num_pages' => array() !== $pages ? count( $pages ) : (int) ( $GLOBALS['ea_wc_max_pages'] ?? 1 ),
 	);
 }

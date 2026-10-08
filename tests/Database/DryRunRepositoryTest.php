@@ -22,6 +22,117 @@ final class DryRunRepositoryTest extends TestCase {
 		unset( $GLOBALS['wpdb'] );
 	}
 
+	public function test_same_second_heartbeat_confirms_owned_run_without_changing_transition_semantics(): void {
+		$GLOBALS['ea_now'] = '2026-10-08 14:43:34';
+		$id = $this->runs->claim_new( 1 );
+		$token = $this->runs->claim_token( $id );
+		self::assertTrue( $this->runs->transition( $id, array( 'pending' ), array( 'status' => 'scanning_store' ), $token, 1 ) );
+		$before = $this->runs->run( $id );
+		self::assertSame( $GLOBALS['ea_now'], $before['last_heartbeat_at'] );
+		self::assertSame( $GLOBALS['ea_now'], $before['updated_at'] );
+		self::assertFalse( $this->runs->transition( $id, array( 'scanning_store' ), array( 'last_heartbeat_at' => $GLOBALS['ea_now'] ), $token, 1 ) );
+		$this->wpdb->heartbeat_update_results = array();
+		self::assertTrue( $this->runs->heartbeat( $id, $token, 1 ) );
+		self::assertSame( array( 0 ), $this->wpdb->heartbeat_update_results );
+		self::assertSame( $before, $this->runs->run( $id ) );
+	}
+
+	public function test_changed_heartbeat_updates_timestamps_without_fallback(): void {
+		$id = $this->runs->claim_new( 1 );
+		$token = $this->runs->claim_token( $id );
+		$GLOBALS['ea_now'] = '2026-10-08 14:43:35';
+		$this->wpdb->queries = array();
+		self::assertTrue( $this->runs->heartbeat( $id, $token, 1 ) );
+		self::assertSame( array( 1 ), $this->wpdb->heartbeat_update_results );
+		self::assertCount( 1, $this->wpdb->queries );
+		self::assertSame( $GLOBALS['ea_now'], $this->runs->run( $id )['last_heartbeat_at'] );
+		self::assertSame( $GLOBALS['ea_now'], $this->runs->run( $id )['updated_at'] );
+	}
+
+	/** @dataProvider rejected_heartbeat_provider */
+	public function test_heartbeat_rejects_unowned_inactive_or_missing_run( string $status, string $token, int $generation, bool $missing ): void {
+		$id = $this->runs->create( 1, 'qa', 'owner' );
+		$this->wpdb->tables['wp_ideaxperts_ea_dry_runs'][0]['status'] = $status;
+		$this->wpdb->tables['wp_ideaxperts_ea_dry_runs'][0]['claim_generation'] = 2 === $generation ? 3 : 1;
+		self::assertFalse( $this->runs->heartbeat( $missing ? $id + 1 : $id, $token, $generation ) );
+		self::assertSame( array( 0 ), $this->wpdb->heartbeat_update_results );
+		self::assertStringContainsString( "AND claim_token = '" . $token . "' AND claim_generation = " . $generation, $this->wpdb->queries[array_key_last( $this->wpdb->queries )] );
+	}
+
+	/** @return array<string,array{string,string,int,bool}> */
+	public static function rejected_heartbeat_provider(): array {
+		return array(
+			'wrong token' => array( 'scanning_store', 'other-worker', 1, false ),
+			'stale generation' => array( 'scanning_store', 'owner', 2, false ),
+			'cancelled' => array( 'cancelled', 'owner', 1, false ),
+			'failed' => array( 'failed', 'owner', 1, false ),
+			'completed' => array( 'completed', 'owner', 1, false ),
+			'cancelling' => array( 'cancelling', 'owner', 1, false ),
+			'recovering' => array( 'recovering', 'owner', 1, false ),
+			'missing' => array( 'scanning_store', 'owner', 1, true ),
+		);
+	}
+
+	/** @dataProvider heartbeat_race_provider */
+	public function test_noop_confirmation_rejects_ownership_or_status_changes_after_update( string $field, mixed $value ): void {
+		$id = $this->runs->create( 1, 'qa', 'owner' );
+		$this->wpdb->after_heartbeat_update = function () use ( $field, $value ): void {
+			if ( 'deleted' === $field ) {
+				$this->wpdb->tables['wp_ideaxperts_ea_dry_runs'] = array();
+			} else {
+				$this->wpdb->tables['wp_ideaxperts_ea_dry_runs'][0][ $field ] = $value;
+			}
+		};
+		self::assertFalse( $this->runs->heartbeat( $id, 'owner', 1 ) );
+		self::assertSame( array( 0 ), $this->wpdb->heartbeat_update_results );
+	}
+
+	/** @return array<string,array{string,mixed}> */
+	public static function heartbeat_race_provider(): array {
+		return array(
+			'new worker' => array( 'claim_token', 'new-owner' ),
+			'new generation' => array( 'claim_generation', 2 ),
+			'cancellation requested' => array( 'status', 'cancelling' ),
+			'cancelled' => array( 'status', 'cancelled' ),
+			'failed' => array( 'status', 'failed' ),
+			'completed' => array( 'status', 'completed' ),
+			'recovering' => array( 'status', 'recovering' ),
+			'deleted' => array( 'deleted', null ),
+		);
+	}
+
+	public function test_heartbeat_sql_failure_skips_confirmation_and_preserves_session(): void {
+		$id = $this->runs->create( 1, 'qa', 'owner' );
+		$before = $this->runs->run( $id );
+		$this->wpdb->queries = array();
+		$this->wpdb->fail_query_contains = 'SET last_heartbeat_at';
+		self::assertFalse( $this->runs->heartbeat( $id, 'owner', 1 ) );
+		self::assertCount( 1, $this->wpdb->queries );
+		self::assertSame( $before, $this->runs->run( $id ) );
+		$this->wpdb->fail_query_contains = '';
+		self::assertTrue( $this->runs->heartbeat( $id, 'owner', 1 ) );
+		self::assertTrue( $this->runs->update_and_then( $id, 'owner', array( 'pending' ), array( 'status' => 'scanning_store' ), null, 1 ) );
+		self::assertSame( 'COMMIT', $this->wpdb->queries[array_key_last( $this->wpdb->queries )] );
+	}
+
+	public function test_heartbeat_confirmation_read_failure_returns_false(): void {
+		$id = $this->runs->create( 1, 'qa', 'owner' );
+		$this->wpdb->fail_read_contains = 'SELECT id FROM';
+		self::assertFalse( $this->runs->heartbeat( $id, 'owner', 1 ) );
+		self::assertSame( array( 0 ), $this->wpdb->heartbeat_update_results );
+	}
+
+	public function test_legacy_heartbeat_pins_generation_through_noop_confirmation(): void {
+		$id = $this->runs->create( 1, 'qa', 'owner' );
+		$this->wpdb->tables['wp_ideaxperts_ea_dry_runs'][0]['claim_generation'] = 3;
+		self::assertTrue( $this->runs->heartbeat( $id, 'owner' ) );
+		$this->wpdb->after_heartbeat_update = function (): void {
+			$this->wpdb->tables['wp_ideaxperts_ea_dry_runs'][0]['claim_generation'] = 4;
+		};
+		self::assertFalse( $this->runs->heartbeat( $id, 'owner' ) );
+		self::assertSame( array( 0, 0 ), $this->wpdb->heartbeat_update_results );
+	}
+
     public function test_discovery_summary_counts_owners_once_and_excludes_other_runs_and_skus(): void {
         $rows = array( array( 1, 0, '123', 'upc' ), array( 1, 0, '123', 'upc' ), array( 1, 0, '456', 'upc' ), array( 2, 0, '123', 'upc' ), array( 2, 3, '789', 'upc' ), array( 4, 0, '111', 'sku' ) );
         foreach ( $rows as $row ) {

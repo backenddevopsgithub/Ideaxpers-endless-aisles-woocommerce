@@ -31,6 +31,10 @@ final class DryRunMemoryWpdb {
 	public $after_lock_insert = null;
 	/** @var callable|null */
 	public $before_mapping_lock = null;
+	/** @var callable|null */
+	public $after_heartbeat_update = null;
+	/** @var list<int> */
+	public array $heartbeat_update_results = array();
 	/** @var array<string,list<array<string,mixed>>> */
 	public array $tables = array();
 
@@ -330,14 +334,26 @@ final class DryRunMemoryWpdb {
 		if ( 1 === preg_match( '/^UPDATE (\S+) SET (.+) WHERE (.+)$/', $sql, $matches ) ) {
 			$data  = $this->parse_set( $matches[2] );
 			$count = 0;
+			$is_heartbeat = str_starts_with( $matches[2], 'last_heartbeat_at = ' );
 			foreach ( $this->tables[ $matches[1] ] as $index => $row ) {
 				if ( ! $this->matches_sql( $row, $matches[3] ) ) {
+					continue;
+				}
+				if ( $is_heartbeat && array_intersect_key( $row, $data ) == $data ) {
 					continue;
 				}
 				$this->tables[ $matches[1] ][ $index ] = array_merge( $row, $data );
 				++$count;
 			}
 			$this->rows_affected = $count;
+			if ( $is_heartbeat ) {
+				$this->heartbeat_update_results[] = $count;
+				if ( is_callable( $this->after_heartbeat_update ) ) {
+					$callback = $this->after_heartbeat_update;
+					$this->after_heartbeat_update = null;
+					$callback();
+				}
+			}
 			return $count;
 		}
 		return 0;

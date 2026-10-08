@@ -20,6 +20,42 @@ final class DryRunManagerTest extends TestCase {
 	private DryRunRepository $runs;
 	private SettingsRepository $settings;
 
+	public function test_same_second_store_heartbeat_persists_first_page_and_dispatches_next_action(): void {
+		$GLOBALS['ea_now'] = '2026-10-08 14:43:34';
+		$GLOBALS['ea_wc_max_pages'] = 7;
+		$GLOBALS['ea_wc_total'] = 313;
+		$GLOBALS['ea_wc_pages'] = array();
+		for ( $i = 1; $i <= 50; ++$i ) {
+			$GLOBALS['ea_wc_products'][] = new ReadOnlyProduct( $i, 'simple', 'publish', 'Widget', sprintf( '%012d', $i ), '' );
+		}
+		try {
+			$manager = $this->manager();
+			$id = $manager->start( 9 );
+			$before = $this->runs->run( $id );
+			self::assertSame( 'scanning_store', $before['status'] );
+			self::assertSame( $GLOBALS['ea_now'], $before['last_heartbeat_at'] );
+			self::assertSame( $GLOBALS['ea_now'], $before['updated_at'] );
+			$this->run_next_action( $manager );
+			self::assertSame( array( 0 ), $this->wpdb->heartbeat_update_results );
+			self::assertSame( 'wc_get_products', $GLOBALS['ea_wc_reads'][0][0] );
+			$run = $this->runs->run( $id );
+			self::assertSame( 50, (int) $run['store_products_scanned'] );
+			self::assertSame( 313, (int) $run['store_total_products'] );
+			self::assertSame( 1, (int) $run['current_store_page'] );
+			self::assertCount( 50, $this->wpdb->tables['wp_ideaxperts_ea_store_identifiers'] );
+			$intents = $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'];
+			self::assertCount( 2, $intents );
+			self::assertNotEmpty( $intents[0]['execution_token'] );
+			self::assertSame( 'completed', $intents[0]['status'] );
+			self::assertSame( 2, (int) $intents[1]['page_number'] );
+			self::assertCount( 1, $GLOBALS['ea_action_queue'] );
+			self::assertSame( DryRunManager::STORE_HOOK, $GLOBALS['ea_action_queue'][0]['hook'] );
+			self::assertSame( 2, $GLOBALS['ea_action_queue'][0]['args'][6] );
+		} finally {
+			unset( $GLOBALS['ea_wc_total'] );
+		}
+	}
+
 	protected function setUp(): void {
 		$this->wpdb                       = new DryRunMemoryWpdb();
 		$GLOBALS['wpdb']                  = $this->wpdb;

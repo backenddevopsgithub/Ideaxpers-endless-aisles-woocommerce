@@ -332,7 +332,32 @@ final class DryRunRepository {
 	}
 
 	public function heartbeat( int $run_id, string $claim_token = '', int $claim_generation = 0 ): bool {
-		return $this->transition( $run_id, array( 'pending', 'scanning_store', 'fetching_catalog' ), array( 'last_heartbeat_at' => current_time( 'mysql', true ) ), $claim_token, $claim_generation );
+		if ( ! $this->session_usable ) {
+			return false;
+		}
+		// Legacy callers omit the generation; pin it before either ownership check.
+		if ( 0 === $claim_generation ) {
+			$claim_generation = $this->claim_generation( $run_id );
+		}
+		if ( $claim_generation < 1 ) {
+			return false;
+		}
+		global $wpdb;
+		$table  = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
+		$now    = current_time( 'mysql', true );
+		$where  = $wpdb->prepare( "WHERE id = %d AND claim_token = %s AND claim_generation = %d AND status IN ('pending','scanning_store','fetching_catalog')", $run_id, $claim_token, $claim_generation );
+		$sql    = $wpdb->prepare( "UPDATE {$table} SET last_heartbeat_at = %s, updated_at = %s", $now, $now ) . ' ' . $where; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$result = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Both fragments are prepared above.
+		if ( false === $result ) {
+			return false;
+		}
+		if ( $result > 0 ) {
+			return true;
+		}
+		// MySQL reports zero changed rows for same-second timestamps. Confirm current
+		// ownership and status again, so a concurrent claim or cancellation fails.
+		$row = $wpdb->get_row( "SELECT id FROM {$table} {$where} LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Fixed table and the same prepared predicates as the UPDATE.
+		return is_array( $row ) && empty( $wpdb->last_error );
 	}
 
 	/**
