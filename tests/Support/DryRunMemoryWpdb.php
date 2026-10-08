@@ -35,6 +35,10 @@ final class DryRunMemoryWpdb {
 	public $after_heartbeat_update = null;
 	/** @var list<int> */
 	public array $heartbeat_update_results = array();
+	/** @var callable|null */
+	public $after_execution_refresh = null;
+	/** @var list<int> */
+	public array $execution_refresh_results = array();
 	/** @var array<string,list<array<string,mixed>>> */
 	public array $tables = array();
 
@@ -335,11 +339,12 @@ final class DryRunMemoryWpdb {
 			$data  = $this->parse_set( $matches[2] );
 			$count = 0;
 			$is_heartbeat = str_starts_with( $matches[2], 'last_heartbeat_at = ' );
+			$is_refresh = str_contains( $matches[1], 'ideaxperts_ea_dry_run_actions' ) && str_starts_with( $matches[2], 'lease_expires_at = ' );
 			foreach ( $this->tables[ $matches[1] ] as $index => $row ) {
 				if ( ! $this->matches_sql( $row, $matches[3] ) ) {
 					continue;
 				}
-				if ( $is_heartbeat && array_intersect_key( $row, $data ) == $data ) {
+				if ( ( $is_heartbeat || $is_refresh ) && array_intersect_key( $row, $data ) == $data ) {
 					continue;
 				}
 				$this->tables[ $matches[1] ][ $index ] = array_merge( $row, $data );
@@ -351,6 +356,14 @@ final class DryRunMemoryWpdb {
 				if ( is_callable( $this->after_heartbeat_update ) ) {
 					$callback = $this->after_heartbeat_update;
 					$this->after_heartbeat_update = null;
+					$callback();
+				}
+			}
+			if ( $is_refresh ) {
+				$this->execution_refresh_results[] = $count;
+				if ( is_callable( $this->after_execution_refresh ) ) {
+					$callback = $this->after_execution_refresh;
+					$this->after_execution_refresh = null;
 					$callback();
 				}
 			}

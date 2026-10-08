@@ -1137,7 +1137,7 @@ final class DryRunRepository {
 	}
 
 	public function refresh_intent_execution( int $intent_id, string $intent_token, string $execution_token ): bool {
-		if ( ! $this->session_usable || '' === $execution_token ) {
+		if ( ! $this->session_usable || $intent_id < 1 || '' === $intent_token || '' === $execution_token ) {
 			return false;
 		}
 		global $wpdb;
@@ -1145,7 +1145,16 @@ final class DryRunRepository {
 		$now     = current_time( 'mysql', true );
 		$expires = gmdate( 'Y-m-d H:i:s', strtotime( $now ) + self::EXECUTION_LEASE_SECONDS );
 		$result  = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET lease_expires_at = %s, updated_at = %s WHERE id = %d AND intent_token = %s AND execution_token = %s AND status = %s AND lease_expires_at >= %s", $expires, $now, $intent_id, $intent_token, $execution_token, 'running', $now ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		return false !== $result && (int) $wpdb->rows_affected > 0;
+		if ( false === $result ) {
+			return false;
+		}
+		if ( (int) $wpdb->rows_affected > 0 ) {
+			return true;
+		}
+		// Same-second refreshes can change no values. Recheck ownership and sample
+		// the clock again so a lease that expires before confirmation cannot succeed.
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT id FROM {$table} WHERE id = %d AND intent_token = %s AND execution_token = %s AND status = %s AND lease_expires_at >= %s LIMIT 1", $intent_id, $intent_token, $execution_token, 'running', current_time( 'mysql', true ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $row ) && empty( $wpdb->last_error );
 	}
 
 	public function reclaim_expired_executions( int $limit = self::ACTION_BATCH_SIZE ): int {

@@ -20,6 +20,51 @@ final class DryRunManagerTest extends TestCase {
 	private DryRunRepository $runs;
 	private SettingsRepository $settings;
 
+	public function test_same_second_execution_refresh_persists_empty_upc_page_without_duplicate_next_action(): void {
+		$GLOBALS['ea_now'] = '2026-10-08 15:14:23';
+		$GLOBALS['ea_wc_max_pages'] = 7;
+		$GLOBALS['ea_wc_total'] = 313;
+		$GLOBALS['ea_wc_pages'] = array();
+		for ( $i = 1; $i <= 50; ++$i ) {
+			$GLOBALS['ea_wc_products'][] = new ReadOnlyProduct( $i, 'simple', 'publish', 'No UPC', '', '' );
+		}
+		try {
+			$manager = $this->manager();
+			$id = $manager->start_local_discovery( 9 );
+			$action = $GLOBALS['ea_action_queue'][0];
+			$this->run_next_action( $manager );
+			self::assertSame( array( 0 ), $this->wpdb->heartbeat_update_results );
+			self::assertSame( array( 0 ), $this->wpdb->execution_refresh_results );
+			self::assertSame( 'wc_get_products', $GLOBALS['ea_wc_reads'][0][0] );
+			$run = $this->runs->run( $id );
+			self::assertSame( 'local', $run['environment'] );
+			self::assertSame( 'scanning_store', $run['status'] );
+			self::assertSame( 50, (int) $run['store_products_scanned'] );
+			self::assertSame( 0, (int) $run['store_variations_scanned'] );
+			self::assertSame( 50, (int) $run['store_missing_upcs'] );
+			self::assertSame( 313, (int) $run['store_total_products'] );
+			self::assertSame( 7, (int) $run['store_total_pages'] );
+			self::assertSame( 1, (int) $run['current_store_page'] );
+			self::assertSame( 'store:2', $run['resume_cursor'] );
+			self::assertSame( array(), $this->wpdb->tables['wp_ideaxperts_ea_store_identifiers'] );
+			$intents = $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'];
+			self::assertCount( 2, $intents );
+			self::assertNotEmpty( $intents[0]['execution_token'] );
+			self::assertSame( 'completed', $intents[0]['status'] );
+			self::assertSame( 2, (int) $intents[1]['page_number'] );
+			self::assertCount( 1, $GLOBALS['ea_action_queue'] );
+			self::assertSame( 2, $GLOBALS['ea_action_queue'][0]['args'][6] );
+			self::assertGreaterThanOrEqual( 2, count( array_filter( $this->wpdb->queries, static fn( string $sql ): bool => 'COMMIT' === $sql ) ) );
+			$manager->store_batch( ...$action['args'] );
+			self::assertSame( $run, $this->runs->run( $id ) );
+			self::assertCount( 2, $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'] );
+			self::assertCount( 1, $GLOBALS['ea_action_queue'] );
+			self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+		} finally {
+			unset( $GLOBALS['ea_wc_total'] );
+		}
+	}
+
 	public function test_same_second_store_heartbeat_persists_first_page_and_dispatches_next_action(): void {
 		$GLOBALS['ea_now'] = '2026-10-08 14:43:34';
 		$GLOBALS['ea_wc_max_pages'] = 7;

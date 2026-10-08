@@ -22,6 +22,130 @@ final class DryRunRepositoryTest extends TestCase {
 		unset( $GLOBALS['wpdb'] );
 	}
 
+	/** @return array{int,string,string} */
+	private function owned_execution(): array {
+		$GLOBALS['ea_now'] = '2026-10-08 15:14:23';
+		$id = $this->runs->create( 1, 'local', 'run-owner' );
+		$this->runs->transition( $id, array( 'pending' ), array( 'status' => 'scanning_store' ), 'run-owner', 1 );
+		$intent_id = $this->runs->create_action_intent( $id, 'run-owner', 1, 'store', 'store-hook', 1 );
+		$token = (string) $this->runs->action_intent( $intent_id )['intent_token'];
+		$this->runs->mark_intent_dispatching( $intent_id, $token );
+		$execution = $this->runs->claim_intent_execution( $intent_id, $token, $id, 'run-owner', 1, 'store', 'store-hook', 1, 'scanning_store', 'current_store_page' );
+		self::assertNotSame( '', $execution );
+		$this->wpdb->queries = array();
+		return array( $intent_id, $token, $execution );
+	}
+
+	public function test_same_second_execution_refresh_confirms_owned_noop(): void {
+		$args = $this->owned_execution();
+		$before = $this->runs->action_intent( $args[0] );
+		self::assertSame( '2026-10-08 15:44:23', $before['lease_expires_at'] );
+		self::assertSame( $GLOBALS['ea_now'], $before['updated_at'] );
+		self::assertTrue( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertSame( array( 0 ), $this->wpdb->execution_refresh_results );
+		self::assertSame( $before, $this->runs->action_intent( $args[0] ) );
+	}
+
+	public function test_changed_execution_refresh_extends_lease_without_confirmation_read(): void {
+		$args = $this->owned_execution();
+		$GLOBALS['ea_now'] = '2026-10-08 15:14:24';
+		self::assertTrue( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertSame( array( 1 ), $this->wpdb->execution_refresh_results );
+		self::assertCount( 1, $this->wpdb->queries );
+		$intent = $this->runs->action_intent( $args[0] );
+		self::assertSame( '2026-10-08 15:44:24', $intent['lease_expires_at'] );
+		self::assertSame( $GLOBALS['ea_now'], $intent['updated_at'] );
+	}
+
+	/** @dataProvider rejected_refresh_provider */
+	public function test_execution_refresh_rejects_invalid_ownership_status_lease_or_row( string $case ): void {
+		$args = $this->owned_execution();
+		$owned_id = $args[0];
+		$before = $this->runs->action_intent( $args[0] );
+		if ( 'intent token' === $case ) {
+			$args[1] = 'different-intent';
+		} elseif ( 'execution token' === $case ) {
+			$args[2] = 'stale-execution';
+		} elseif ( 'missing' === $case ) {
+			$args[0] = 999;
+		} elseif ( 'expired' === $case ) {
+			$this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'][0]['lease_expires_at'] = '2026-10-08 15:14:22';
+		} else {
+			$this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'][0]['status'] = $case;
+		}
+		self::assertFalse( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertSame( array( 0 ), $this->wpdb->execution_refresh_results );
+		self::assertSame( $before['updated_at'], $this->runs->action_intent( $owned_id )['updated_at'] );
+	}
+
+	/** @return array<string,array{string}> */
+	public static function rejected_refresh_provider(): array {
+		return array(
+			'wrong intent token' => array( 'intent token' ),
+			'wrong execution token' => array( 'execution token' ),
+			'cancelled' => array( 'cancelled' ),
+			'completed' => array( 'completed' ),
+			'failed' => array( 'failed' ),
+			'expired lease' => array( 'expired' ),
+			'missing row' => array( 'missing' ),
+		);
+	}
+
+	public function test_execution_refresh_rejects_missing_identity_without_sql(): void {
+		self::assertFalse( $this->runs->refresh_intent_execution( 0, 'intent', 'execution' ) );
+		self::assertFalse( $this->runs->refresh_intent_execution( 1, '', 'execution' ) );
+		self::assertFalse( $this->runs->refresh_intent_execution( 1, 'intent', '' ) );
+		self::assertSame( array(), $this->wpdb->queries );
+	}
+
+	public function test_execution_refresh_update_failure_skips_fallback_and_preserves_session(): void {
+		$args = $this->owned_execution();
+		$this->wpdb->fail_query_contains = 'SET lease_expires_at';
+		self::assertFalse( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertCount( 1, $this->wpdb->queries );
+		$this->wpdb->fail_query_contains = '';
+		self::assertTrue( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertTrue( $this->runs->session_usable() );
+	}
+
+	public function test_execution_refresh_confirmation_read_failure_returns_false(): void {
+		$args = $this->owned_execution();
+		$this->wpdb->fail_read_contains = 'SELECT id FROM';
+		self::assertFalse( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertSame( array( 0 ), $this->wpdb->execution_refresh_results );
+	}
+
+	/** @dataProvider refresh_race_provider */
+	public function test_noop_execution_refresh_rechecks_ownership_status_and_current_lease( string $field, mixed $value ): void {
+		$args = $this->owned_execution();
+		$this->wpdb->after_execution_refresh = function () use ( $field, $value ): void {
+			if ( 'clock' === $field ) {
+				$GLOBALS['ea_now'] = $value;
+			} elseif ( 'deleted' === $field ) {
+				$this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'] = array();
+			} else {
+				$this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'][0][ $field ] = $value;
+			}
+		};
+		self::assertFalse( $this->runs->refresh_intent_execution( ...$args ) );
+		self::assertSame( array( 0 ), $this->wpdb->execution_refresh_results );
+	}
+
+	/** @return array<string,array{string,mixed}> */
+	public static function refresh_race_provider(): array {
+		return array(
+			'stolen execution' => array( 'execution_token', 'new-execution' ),
+			'reclaimed execution' => array( 'execution_token', '' ),
+			'different intent' => array( 'intent_token', 'new-intent' ),
+			'cancelled' => array( 'status', 'cancelled' ),
+			'completed' => array( 'status', 'completed' ),
+			'failed' => array( 'status', 'failed' ),
+			'lease shortened' => array( 'lease_expires_at', '2026-10-08 15:14:22' ),
+			'lease expires before SELECT' => array( 'clock', '2026-10-08 15:44:24' ),
+			'row deleted' => array( 'deleted', null ),
+		);
+	}
+
 	public function test_same_second_heartbeat_confirms_owned_run_without_changing_transition_semantics(): void {
 		$GLOBALS['ea_now'] = '2026-10-08 14:43:34';
 		$id = $this->runs->claim_new( 1 );
