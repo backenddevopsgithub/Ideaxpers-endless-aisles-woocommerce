@@ -890,6 +890,45 @@ final class DryRunRepositoryTest extends TestCase {
 		self::assertSame( $run_id, $this->runs->lock_run_id() );
 	}
 
+	public function test_catalog_checkpoint_keeps_execution_and_continuation_is_fenced_and_unique(): void {
+		$id = $this->runs->claim_new( 1 );
+		$owner = $this->runs->claim_token( $id );
+		$gen = $this->runs->claim_generation( $id );
+		$this->runs->transition( $id, array( 'pending' ), array( 'status' => 'fetching_catalog', 'resume_cursor' => 'catalog:1' ), $owner, $gen );
+		$intent_id = $this->runs->create_action_intent( $id, $owner, $gen, 'catalog', 'catalog-hook', 1 );
+		$intent_token = $this->runs->action_intent( $intent_id )['intent_token'];
+		$this->runs->mark_intent_dispatching( $intent_id, $intent_token );
+		$execution = $this->runs->claim_intent_execution( $intent_id, $intent_token, $id, $owner, $gen, 'catalog', 'catalog-hook', 1, 'fetching_catalog', 'current_api_page' );
+		$args = array( $id, $owner, $gen, $intent_id, $intent_token, $execution, 'catalog-hook' );
+		self::assertTrue( $this->runs->persist_catalog_page_execution( ...array_merge( $args, array( 1, array(), array(), array( 'current_api_page' => 1, 'resume_cursor' => 'catalog:2' ), null, true ) ) ) );
+		self::assertSame( 0, $this->wpdb->rows_affected );
+		self::assertSame( 'running', $this->runs->action_intent( $intent_id )['status'] );
+		self::assertCount( 1, $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'] );
+		self::assertFalse( $this->runs->persist_catalog_page_execution( ...array_merge( $args, array( 1, array(), array(), array( 'current_api_page' => 1 ), null, true ) ) ) );
+		self::assertFalse( $this->runs->persist_catalog_page_execution( ...array_merge( $args, array( 3, array(), array(), array( 'current_api_page' => 3 ), null, true ) ) ) );
+		$stale = $args;
+		$stale[5] = 'stale-execution';
+		self::assertNull( $this->runs->begin_failure( $id, $owner, $gen, 'Failure', 'catalog:1', $intent_id, $intent_token, 'stale-execution' ) );
+		self::assertSame( 'catalog:2', $this->runs->run( $id )['resume_cursor'] );
+		self::assertFalse( $this->runs->finish_catalog_execution( ...array_merge( $stale, array( 2, array() ) ) ) );
+		self::assertFalse( $this->runs->finish_catalog_execution( ...array_merge( $args, array( 3, array() ) ) ) );
+		self::assertTrue( $this->runs->finish_catalog_execution( ...array_merge( $args, array( 2, array( 'pages_processed' => 1 ) ) ) ) );
+		self::assertFalse( $this->runs->finish_catalog_execution( ...array_merge( $args, array( 2, array() ) ) ) );
+		self::assertCount( 2, $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'] );
+		self::assertSame( 2, $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'][1]['page_number'] );
+	}
+
+	public function test_never_started_catalog_intent_cannot_claim_an_advanced_cursor(): void {
+		$id = $this->runs->claim_new( 1 );
+		$owner = $this->runs->claim_token( $id );
+		$gen = $this->runs->claim_generation( $id );
+		$this->runs->transition( $id, array( 'pending' ), array( 'status' => 'fetching_catalog', 'current_api_page' => 3, 'resume_cursor' => 'catalog:4' ), $owner, $gen );
+		$intent_id = $this->runs->create_action_intent( $id, $owner, $gen, 'catalog', 'catalog-hook', 1 );
+		$intent_token = $this->runs->action_intent( $intent_id )['intent_token'];
+		$this->runs->mark_intent_dispatching( $intent_id, $intent_token );
+		self::assertSame( '', $this->runs->claim_intent_execution( $intent_id, $intent_token, $id, $owner, $gen, 'catalog', 'catalog-hook', 1, 'fetching_catalog', 'current_api_page' ) );
+	}
+
 	private function active_run(): int {
 		$run_id = $this->runs->claim_new( 1 );
 		$this->runs->transition( $run_id, array( 'pending' ), array( 'status' => 'scanning_store' ), $this->runs->claim_token( $run_id ) );

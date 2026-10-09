@@ -319,12 +319,12 @@ final class DryRunManagerTest extends TestCase {
 		$this->runs->create_action_intent( $run_id, $this->runs->claim_token( $run_id ), $this->runs->claim_generation( $run_id ), 'catalog', DryRunManager::CATALOG_HOOK, 1 );
 		$manager->reconcile();
 		$this->run_next_action( $manager );
-		$this->run_next_action( $manager );
 		$items = $this->runs->items( $run_id );
 		self::assertSame( 'already_linked', $items[0]['classification'] );
 		self::assertSame( 'new_product_candidate', $items[1]['classification'] );
 		self::assertStringContainsString( 'duplicate_vendor_upc', (string) $items[0]['review_flags'] );
 		self::assertSame( 'completed', $this->runs->run( $run_id )['status'] );
+		self::assertSame( 2, json_decode( $this->runs->run( $run_id )['warning_counters'], true )['duplicate_vendor_upc'] );
 		self::assertSame( array( array( 'GET', '/api/products?page=1&per_page=10' ), array( 'GET', '/api/products?page=2&per_page=10' ) ), $client->requests );
 	}
 
@@ -959,7 +959,7 @@ final class DryRunManagerTest extends TestCase {
         for ( $page = 1; $page <= 2; ++$page ) {
             $responses[] = array( 'current_page' => $page, 'per_page' => 10, 'total' => 2, 'last_page' => 2, 'next_page_url' => 1 === $page ? '/api/products?page=2&per_page=10' : null, 'data' => array( (object) array( 'id' => 'p' . $page, 'sizes' => array( (object) array( 'id' => 'o' . $page, 'upc' => '00123456789' . $page ) ) ) ) );
         }
-        $manager = $this->manager( new SequenceClient( $responses ) );
+        $manager = $this->manager( new SequenceClient( $responses ), self::page_clock() );
         $id = $manager->start( 9 );
         $this->run_next_action( $manager );
         $action = array_shift( $GLOBALS['ea_action_queue'] );
@@ -981,7 +981,7 @@ final class DryRunManagerTest extends TestCase {
 
     public function test_page_failure_does_not_commit_observability_counters(): void {
         $client = new SequenceClient( array( array( 'current_page' => 1, 'per_page' => 10, 'total' => 1, 'last_page' => 1, 'next_page_url' => null, 'data' => array( (object) array( 'id' => 'p', 'sizes' => array( (object) array( 'id' => 'o', 'upc' => '123' ) ) ) ) ) ) );
-        $manager = $this->manager( $client );
+        $manager = $this->manager( $client, self::page_clock() );
         $id = $manager->start( 9 );
         $this->run_next_action( $manager );
         $this->wpdb->fail_operation = 'replace';
@@ -1011,7 +1011,7 @@ final class DryRunManagerTest extends TestCase {
     public function test_cancellation_preserves_committed_progress_and_fences_next_callback(): void {
         $response = array( 'current_page' => 1, 'per_page' => 10, 'total' => 2, 'last_page' => 2, 'next_page_url' => '/api/products?page=2&per_page=10', 'data' => array( (object) array( 'id' => 'p', 'sizes' => array( (object) array( 'id' => 'o', 'upc' => '001234567890' ) ) ) ) );
         $client = new SequenceClient( array( $response ) );
-        $manager = $this->manager( $client );
+        $manager = $this->manager( $client, self::page_clock() );
         $id = $manager->start( 9 );
         $this->run_next_action( $manager );
         $this->run_next_action( $manager );
@@ -1041,16 +1041,237 @@ final class DryRunManagerTest extends TestCase {
         self::assertSame( 'failed', $run['status'] );
         self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
     }
-	private function manager( ?SequenceClient $client = null ): DryRunManager {
+	/** @dataProvider chunkSizes */
+	public function test_chunk_budget_and_final_partial_chunk( int $total, int $first, string $reason ): void {
+		$client = new SequenceClient( self::catalog_responses( 1, $total ) );
+		$manager = $this->manager( $client, static fn(): float => 0.0 );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$action = $GLOBALS['ea_action_queue'][0];
+		$this->run_next_action( $manager );
+		$run = $this->runs->run( $id );
+		self::assertCount( $first, $client->requests );
+		self::assertSame( $first, (int) $run['current_api_page'] );
+		self::assertSame( $first, (int) $run['catalog_products_processed'] );
+		self::assertSame( $reason, json_decode( $run['worker_diagnostics'], true )['stop_reason'] );
+		$manager->catalog_page( ...$action['args'] );
+		$manager->reconcile();
+		self::assertCount( $first, $client->requests );
+		self::assertCount( $total > $first ? 1 : 0, $GLOBALS['ea_action_queue'] );
+		if ( $total > $first ) {
+			self::assertSame( $first + 1, $GLOBALS['ea_action_queue'][0]['args'][6] );
+			$this->run_next_action( $manager );
+		}
+		self::assertSame( 'completed', $this->runs->run( $id )['status'] );
+		self::assertSame( $total, (int) $this->runs->run( $id )['catalog_products_processed'] );
+		self::assertCount( $total, $this->runs->items( $id ) );
+		self::assertSame( $total, (int) json_decode( $this->runs->run( $id )['match_counters'], true )['new_product_candidate'] );
+		self::assertSame( array(), $GLOBALS['ea_wc_writes'] );
+		self::assertContains( 0, $this->wpdb->execution_refresh_results );
+	}
+
+	/** @return array<string,array{int,int,string}> */
+	public static function chunkSizes(): array {
+		return array( 'ten' => array( 10, 10, 'completion' ), 'page limit' => array( 13, 10, 'page_limit' ), 'partial' => array( 3, 3, 'completion' ) );
+	}
+
+	public function test_clock_budget_stops_after_four_durable_pages(): void {
+		$time = -7.0;
+		$clock = static function () use ( &$time ): float { $time += 7.0; return $time; };
+		$client = new SequenceClient( self::catalog_responses( 1, 12 ) );
+		$manager = $this->manager( $client, $clock );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$this->run_next_action( $manager );
+		self::assertCount( 4, $client->requests );
+		self::assertSame( 'catalog:5', $this->runs->run( $id )['resume_cursor'] );
+		self::assertSame( 5, $GLOBALS['ea_action_queue'][0]['args'][6] );
+		self::assertSame( 'time_budget', json_decode( $this->runs->run( $id )['worker_diagnostics'], true )['stop_reason'] );
+	}
+
+	public function test_page_five_failure_keeps_four_pages_and_retry_has_exact_counts(): void {
+		$responses = self::catalog_responses( 1, 10 );
+		$failure = new \IdeaXperts\EndlessAisles\API\ApiException( 'Endless Aisles request failed.' );
+		array_splice( $responses, 4, 1, array( $failure, $failure, $failure ) );
+		$client = new SequenceClient( $responses );
+		$manager = $this->manager( $client );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$this->run_next_action( $manager );
+		$run = $this->runs->run( $id );
+		self::assertSame( 'failed', $run['status'] );
+		self::assertSame( 'catalog:5', $run['resume_cursor'] );
+		self::assertSame( 4, (int) $run['catalog_products_processed'] );
+		self::assertCount( 4, $this->runs->items( $id ) );
+		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
+		$retry = $this->manager( new SequenceClient( self::catalog_responses( 5, 10 ) ) );
+		$retry->resume( $id );
+		$this->run_next_action( $retry );
+		self::assertSame( 'completed', $this->runs->run( $id )['status'] );
+		self::assertSame( 10, (int) $this->runs->run( $id )['catalog_products_processed'] );
+		self::assertCount( 10, $this->runs->items( $id ) );
+		self::assertSame( 10, json_decode( $this->runs->run( $id )['match_counters'], true )['new_product_candidate'] );
+	}
+
+	/** @dataProvider interruptionKinds */
+	public function test_between_page_interruption_stops_before_another_request( string $kind ): void {
+		$client = new SequenceClient( self::catalog_responses( 1, 10 ) );
+		$id = 0;
+		$calls = 0;
+		$clock = function () use ( &$calls, &$id, $kind ): float {
+			if ( ++$calls === 2 ) {
+				if ( 'cancel' === $kind ) {
+					$this->runs->request_cancellation( $id, $this->runs->claim_generation( $id ) );
+				} elseif ( 'lease' === $kind ) {
+					$GLOBALS['ea_now'] = '2026-09-24 12:31:01';
+				} else {
+					$this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'][1]['execution_token'] = 'replacement';
+				}
+			}
+			return 0.0;
+		};
+		$manager = $this->manager( $client, $clock );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$this->run_next_action( $manager );
+		self::assertCount( 1, $client->requests );
+		self::assertSame( 1, (int) $this->runs->run( $id )['current_api_page'] );
+		self::assertSame( 'catalog:2', $this->runs->run( $id )['resume_cursor'] );
+		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
+	}
+
+	/** @return array<string,array{string}> */
+	public static function interruptionKinds(): array {
+		return array( 'cancellation' => array( 'cancel' ), 'ownership' => array( 'ownership' ), 'expiry' => array( 'lease' ) );
+	}
+
+	/** @dataProvider crashPages */
+	public function test_crash_after_checkpoint_reclaims_starting_intent_at_next_page( int $pages ): void {
+		$client = new SequenceClient( self::catalog_responses( 1, 12 ) );
+		$calls = 0;
+		$clock = static function () use ( &$calls, $pages ): float {
+			if ( ++$calls === $pages + 1 ) {
+				$GLOBALS['ea_now'] = '2026-09-24 12:31:01';
+			}
+			return 0.0;
+		};
+		$manager = $this->manager( $client, $clock );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$stale = $GLOBALS['ea_action_queue'][0];
+		$this->run_next_action( $manager );
+		self::assertSame( $pages, (int) $this->runs->run( $id )['current_api_page'] );
+		self::assertCount( $pages, $client->requests );
+		$recovery_client = new SequenceClient( self::catalog_responses( $pages + 1, 12 ) );
+		$recovery = $this->manager( $recovery_client, static fn(): float => 0.0 );
+		$recovery->reconcile();
+		$this->run_next_action( $recovery );
+		$manager->catalog_page( ...$stale['args'] );
+		while ( count( $GLOBALS['ea_action_queue'] ) > 0 ) {
+			$this->run_next_action( $recovery );
+		}
+		self::assertSame( array( 'GET', '/api/products?page=' . ( $pages + 1 ) . '&per_page=10' ), $recovery_client->requests[0] );
+		self::assertSame( 'completed', $this->runs->run( $id )['status'] );
+		self::assertSame( 12, (int) $this->runs->run( $id )['catalog_products_processed'] );
+		self::assertCount( 12, $this->runs->items( $id ) );
+	}
+
+	/** @return array<string,array{int}> */
+	public static function crashPages(): array {
+		return array( 'page one' => array( 1 ), 'page three' => array( 3 ), 'page nine' => array( 9 ), 'before continuation' => array( 10 ) );
+	}
+
+	public function test_continuation_insert_failure_keeps_last_page_checkpoint_recoverable(): void {
+		$client = new SequenceClient( self::catalog_responses( 1, 11 ) );
+		$manager = $this->manager( $client, static fn(): float => 0.0 );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$this->wpdb->fail_insert_table_contains = 'dry_run_actions';
+		$this->run_next_action( $manager );
+		self::assertSame( 10, (int) $this->runs->run( $id )['current_api_page'] );
+		self::assertSame( 'catalog:11', $this->runs->run( $id )['resume_cursor'] );
+		self::assertSame( array(), $GLOBALS['ea_action_queue'] );
+		$GLOBALS['ea_now'] = '2026-09-24 12:31:01';
+		$recovery = $this->manager( new SequenceClient( self::catalog_responses( 11, 11 ) ) );
+		$recovery->reconcile();
+		$this->run_next_action( $recovery );
+		self::assertSame( 'completed', $this->runs->run( $id )['status'] );
+		self::assertSame( 11, (int) $this->runs->run( $id )['catalog_products_processed'] );
+	}
+
+	public function test_crash_after_continuation_creation_reconciles_exactly_one_action(): void {
+		$client = new SequenceClient( self::catalog_responses( 1, 11 ) );
+		$manager = $this->manager( $client, static fn(): float => 0.0 );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$GLOBALS['ea_enqueue_failure'] = true;
+		$this->run_next_action( $manager );
+		self::assertSame( 10, (int) $this->runs->run( $id )['current_api_page'] );
+		self::assertCount( 3, $this->wpdb->tables['wp_ideaxperts_ea_dry_run_actions'] );
+		$GLOBALS['ea_enqueue_failure'] = false;
+		$GLOBALS['ea_now'] = '2026-09-24 12:01:01';
+		$manager->reconcile();
+		$manager->reconcile();
+		self::assertCount( 1, $GLOBALS['ea_action_queue'] );
+		self::assertSame( 11, $GLOBALS['ea_action_queue'][0]['args'][6] );
+		$this->run_next_action( $manager );
+		self::assertSame( 'completed', $this->runs->run( $id )['status'] );
+	}
+
+	/** @dataProvider emptyPageKinds */
+	public function test_empty_catalog_pages_checkpoint_without_classifications( bool $empty_products ): void {
+		$responses = self::catalog_responses( 1, 10 );
+		foreach ( $responses as &$response ) {
+			if ( $empty_products ) {
+				$response['data'] = array();
+			} else {
+				$response['data'][0]->sizes = array();
+			}
+		}
+		unset( $response );
+		$manager = $this->manager( new SequenceClient( $responses ), static fn(): float => 0.0 );
+		$id = $manager->start( 9 );
+		$this->run_next_action( $manager );
+		$this->run_next_action( $manager );
+		self::assertSame( 'completed', $this->runs->run( $id )['status'] );
+		self::assertSame( 10, (int) $this->runs->run( $id )['current_api_page'] );
+		self::assertSame( $empty_products ? 0 : 10, (int) $this->runs->run( $id )['catalog_products_processed'] );
+		self::assertSame( array(), $this->runs->items( $id ) );
+	}
+
+	/** @return array<string,array{bool}> */
+	public static function emptyPageKinds(): array {
+		return array( 'no products' => array( true ), 'no options' => array( false ) );
+	}
+
+	/** @return list<array<string,mixed>> */
+	private static function catalog_responses( int $start, int $total ): array {
+		$responses = array();
+		for ( $page = $start; $page <= $total; ++$page ) {
+			$responses[] = array( 'current_page' => $page, 'per_page' => 10, 'total' => $total, 'last_page' => $total, 'next_page_url' => $page < $total ? '/api/products?page=' . ( $page + 1 ) . '&per_page=10' : null, 'data' => array( (object) array( 'id' => 'p' . $page, 'sizes' => array( (object) array( 'id' => 'o' . $page, 'upc' => sprintf( '%012d', $page ) ) ) ) ) );
+		}
+		return $responses;
+	}
+
+	private static function page_clock(): \Closure {
+		$time = 0.0;
+		return static function () use ( &$time ): float {
+			$time += 26.0;
+			return $time;
+		};
+	}
+
+	private function manager( ?SequenceClient $client = null, ?\Closure $clock = null ): DryRunManager {
 		$client  = $client ?? new SequenceClient( array() );
-		$catalog = new CatalogService( $this->settings, new BaseUrlResolver(), new DatabaseLogger(), static fn(): SequenceClient => $client );
+		$catalog = new CatalogService( $this->settings, new BaseUrlResolver(), new DatabaseLogger(), static fn(): SequenceClient => $client, static function ( int $seconds ): void {} );
 		return new DryRunManager(
 			$this->settings,
 			$this->runs,
 			new StoreCatalogScanner( $this->settings, $this->runs ),
 			$catalog,
 			new DatabaseLogger(),
-			new MatchClassifier()
+			new MatchClassifier(),
+			$clock
 		);
 	}
 

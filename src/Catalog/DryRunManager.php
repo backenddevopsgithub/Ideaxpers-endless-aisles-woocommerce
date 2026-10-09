@@ -9,10 +9,14 @@ use IdeaXperts\EndlessAisles\ProductMapping\UpcNormalizer;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 use IdeaXperts\EndlessAisles\Settings\SettingsValidator;
 use RuntimeException;
+use Closure;
 
 defined( 'ABSPATH' ) || exit;
 
 final class DryRunManager {
+	public const CATALOG_PAGE_LIMIT  = 10;
+	public const CATALOG_TIME_BUDGET = 25.0;
+
 	public const GROUP          = 'ideaxperts-endless-aisles';
 	public const STORE_HOOK     = 'ideaxperts_ea_dry_run_store_batch';
 	public const CATALOG_HOOK   = 'ideaxperts_ea_dry_run_catalog_page';
@@ -25,7 +29,8 @@ final class DryRunManager {
 		private readonly StoreCatalogScanner $scanner,
 		private readonly CatalogService $catalog,
 		private readonly DatabaseLogger $logger,
-		private readonly MatchClassifier $classifier
+		private readonly MatchClassifier $classifier,
+		private readonly ?Closure $clock = null
 	) {}
 
 	public function register(): void {
@@ -283,61 +288,114 @@ final class DryRunManager {
 		if ( '' === $execution || ! $this->runs->heartbeat( $run_id, $token, $generation ) ) {
 			return;
 		}
+		$started   = $this->worker_time();
+		$processed = 0;
+		$run       = $this->runs->run( $run_id );
+		$page      = (int) ( $run['current_api_page'] ?? 0 ) + 1;
 		try {
-			$run    = $this->runs->run( $run_id );
-			$result = $this->catalog->page( $page, (string) ( $run['environment'] ?? '' ) );
-			$built  = $this->build_catalog_items( $run_id, $result['products'] );
-			if ( ! $this->runs->refresh_intent_execution( $intent_id, $intent_token, $execution ) ) {
+			while ( true ) {
+				if ( ! $this->runs->heartbeat( $run_id, $token, $generation ) || ! $this->runs->refresh_intent_execution( $intent_id, $intent_token, $execution ) ) {
+					return;
+				}
+				$run    = $this->runs->run( $run_id );
+				$result = $this->catalog->page( $page, (string) ( $run['environment'] ?? '' ) );
+				$built  = $this->build_catalog_items( $run_id, $result['products'] );
+				if ( ! $this->runs->refresh_intent_execution( $intent_id, $intent_token, $execution ) ) {
+					return;
+				}
+				$next = $result['next_page'];
+				++$processed;
+				$reason       = null === $next ? 'completion' : '';
+				$keep_running = '' === $reason;
+				$ok           = $this->runs->persist_catalog_page_execution(
+					$run_id,
+					$token,
+					$generation,
+					$intent_id,
+					$intent_token,
+					$execution,
+					self::CATALOG_HOOK,
+					$page,
+					$built['items'],
+					$built['duplicates'],
+					array(
+						'current_api_page'           => $page,
+						'worker_diagnostics'         => wp_json_encode(
+							array(
+								'pages_processed'       => $processed,
+								'continuation_page'     => $keep_running ? null : $next,
+								'stop_reason'           => $reason,
+								'local_snapshot_reused' => false,
+							)
+						),
+						'catalog_products_processed' => ! isset( $run['catalog_products_processed'] ) && (int) $run['current_api_page'] > 0 ? null : (int) ( $run['catalog_products_processed'] ?? 0 ) + count( $result['products'] ),
+						'catalog_total_products'     => $result['total_products'],
+						'catalog_total_pages'        => $result['total_pages'],
+						'resume_cursor'              => null === $next ? '' : 'catalog:' . $next,
+						'status'                     => null === $next ? 'completed' : 'fetching_catalog',
+						'completed_at'               => null === $next ? current_time( 'mysql', true ) : null,
+						'last_heartbeat_at'          => current_time( 'mysql', true ),
+					),
+					null,
+					$keep_running
+				);
+				if ( ! $ok ) {
+					if ( ! $this->runs->refresh_intent_execution( $intent_id, $intent_token, $execution ) ) {
+						return;
+					}
+					throw new RuntimeException();
+				}
+				if ( null !== $next ) {
+					$page    = $next;
+					$elapsed = $this->worker_time() - $started;
+					$reason  = $processed >= self::CATALOG_PAGE_LIMIT ? 'page_limit' : ( $elapsed >= self::CATALOG_TIME_BUDGET ? 'time_budget' : '' );
+					if ( '' === $reason ) {
+						continue;
+					}
+					if ( ! $this->runs->finish_catalog_execution(
+						$run_id,
+						$token,
+						$generation,
+						$intent_id,
+						$intent_token,
+						$execution,
+						self::CATALOG_HOOK,
+						$next,
+						array(
+							'pages_processed'       => $processed,
+							'continuation_page'     => $next,
+							'stop_reason'           => $reason,
+							'local_snapshot_reused' => false,
+						)
+					) ) {
+						return;
+					}
+				}
+				if ( null === $next ) {
+					$this->logger->log(
+						'info',
+						'Catalog dry run completed.',
+						array(
+							'run_id'      => $run_id,
+							'environment' => (string) $run['environment'],
+						)
+					);
+					$this->runs->release_lock( $run_id, $token, $generation );
+					$this->purge_expired();
+				} else {
+					$this->reconcile();
+				}
 				return;
 			}
-			$next = $result['next_page'];
-			$ok   = $this->runs->persist_catalog_page_execution(
-				$run_id,
-				$token,
-				$generation,
-				$intent_id,
-				$intent_token,
-				$execution,
-				self::CATALOG_HOOK,
-				$page,
-				$built['items'],
-				$built['duplicates'],
-				array(
-					'current_api_page'           => $page,
-					'catalog_products_processed' => ! isset( $run['catalog_products_processed'] ) && (int) $run['current_api_page'] > 0 ? null : (int) ( $run['catalog_products_processed'] ?? 0 ) + count( $result['products'] ),
-					'catalog_total_products'     => $result['total_products'],
-					'catalog_total_pages'        => $result['total_pages'],
-					'resume_cursor'              => null === $next ? '' : 'catalog:' . $next,
-					'status'                     => null === $next ? 'completed' : 'fetching_catalog',
-					'completed_at'               => null === $next ? current_time( 'mysql', true ) : null,
-					'last_heartbeat_at'          => current_time( 'mysql', true ),
-				),
-				null === $next ? null : array(
-					'action_type' => 'catalog',
-					'hook'        => self::CATALOG_HOOK,
-					'page'        => $next,
-				)
-			);
-			if ( ! $ok ) {
-				throw new RuntimeException();
-			}
-			if ( null === $next ) {
-				$this->logger->log(
-					'info',
-					'Catalog dry run completed.',
-					array(
-						'run_id'      => $run_id,
-						'environment' => (string) $run['environment'],
-					)
-				);
-				$this->runs->release_lock( $run_id, $token, $generation );
-				$this->purge_expired();
-			} else {
-				$this->reconcile();
-			}
 		} catch ( \Throwable $exception ) {
-			$this->fail( $run_id, $token, $generation, 'catalog:' . $page, $exception );
+			if ( $this->runs->refresh_intent_execution( $intent_id, $intent_token, $execution ) ) {
+				$this->fail( $run_id, $token, $generation, 'catalog:' . $page, $exception, $intent_id, $intent_token, $execution );
+			}
 		}
+	}
+
+	private function worker_time(): float {
+		return null !== $this->clock ? (float) ( $this->clock )() : hrtime( true ) / 1e9;
 	}
 
 	/**
@@ -537,9 +595,9 @@ final class DryRunManager {
 		return self::find_action( $hook, $args, true ) > 0;
 	}
 
-	private function fail( int $run_id, string $token, int $generation, string $cursor, \Throwable $exception ): void {
+	private function fail( int $run_id, string $token, int $generation, string $cursor, \Throwable $exception, int $intent_id = 0, string $intent_token = '', string $execution_token = '' ): void {
 		$message = $exception instanceof ApiException ? $exception->getMessage() : 'Catalog dry-run processing failed.';
-		if ( null !== $this->runs->begin_failure( $run_id, $token, $generation, $message, $cursor ) ) {
+		if ( null !== $this->runs->begin_failure( $run_id, $token, $generation, $message, $cursor, $intent_id, $intent_token, $execution_token ) ) {
 			$this->reconcile_cancellations();
 		}
 	}

@@ -249,6 +249,11 @@ final class CatalogDryRunAdmin {
 			$values['Vendor products total']              = $p['total'] ?? 'Unknown';
 			$values['API pages processed']                = max( 0, (int) ( $run['current_api_page'] ?? 0 ) );
 			$values['API pages total']                    = $run['catalog_total_pages'] ?? 'Unknown';
+			$diagnostics                                  = json_decode( (string) ( $run['worker_diagnostics'] ?? '' ), true );
+			$values['Latest worker pages']                = $diagnostics['pages_processed'] ?? 'Unknown';
+			$values['Continuation page']                  = $diagnostics['continuation_page'] ?? 'None';
+			$values['Worker stop reason']                 = $diagnostics['stop_reason'] ?? 'Unknown';
+			$values['Local snapshot reused']              = 'No';
 			$values['Current / next API page']            = preg_match( '/^catalog:([1-9][0-9]*)$/', (string) ( $run['resume_cursor'] ?? '' ), $cursor ) ? (int) $cursor[1] : 'No catalog page pending';
 			$values['Options processed']                  = $p['options'];
 			$review                                       = $this->runs->review_summary( (int) $run['id'] );

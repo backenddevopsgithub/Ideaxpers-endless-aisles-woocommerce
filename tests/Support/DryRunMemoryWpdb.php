@@ -192,6 +192,9 @@ final class DryRunMemoryWpdb {
 					}
 				}
 			}
+			if ( str_contains( $table, 'dry_run_actions' ) && 'running' === ( $data['status'] ?? '' ) && array_intersect_key( $row, $data ) == $data ) {
+				continue;
+			}
 			$this->tables[ $table ][ $index ] = array_merge( $row, $data );
 			++$count;
 		}

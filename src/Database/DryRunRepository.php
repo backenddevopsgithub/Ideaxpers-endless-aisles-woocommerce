@@ -79,6 +79,7 @@ final class DryRunRepository {
 		'catalog_products_processed',
 		'catalog_total_products',
 		'catalog_total_pages',
+		'worker_diagnostics',
 		'store_products_scanned',
 		'store_variations_scanned',
 		'store_missing_upcs',
@@ -331,6 +332,7 @@ final class DryRunRepository {
 		return false !== $result && (int) $wpdb->rows_affected > 0;
 	}
 
+	/** @phpstan-impure Ownership can change between calls in another database session. */
 	public function heartbeat( int $run_id, string $claim_token = '', int $claim_generation = 0 ): bool {
 		if ( ! $this->session_usable ) {
 			return false;
@@ -409,7 +411,7 @@ final class DryRunRepository {
 	}
 
 	/** @return array{run_id:int,claim_token:string,claim_generation:int}|null */
-	public function begin_failure( int $run_id, string $claim_token, int $claim_generation, string $message, string $cursor = '' ): ?array {
+	public function begin_failure( int $run_id, string $claim_token, int $claim_generation, string $message, string $cursor = '', int $intent_id = 0, string $intent_token = '', string $execution_token = '' ): ?array {
 		$fields = array(
 			'status'        => 'recovering',
 			'error_summary' => $message,
@@ -421,7 +423,16 @@ final class DryRunRepository {
 			$run_id,
 			$claim_token,
 			array( 'pending', 'scanning_store', 'fetching_catalog' ),
-			function () use ( $run_id, $claim_token, $claim_generation, $fields ): bool {
+			function () use ( $run_id, $claim_token, $claim_generation, $fields, $intent_id, $intent_token, $execution_token ): bool {
+				if ( $intent_id > 0 ) {
+					global $wpdb;
+					$table  = $wpdb->prefix . 'ideaxperts_ea_dry_run_actions';
+					$intent = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d AND intent_token = %s FOR UPDATE", $intent_id, $intent_token ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+					if ( ! is_array( $intent ) || ! empty( $wpdb->last_error ) || 'running' !== $intent['status'] || '' === $execution_token || ! hash_equals( (string) $intent['execution_token'], $execution_token ) || (string) $intent['lease_expires_at'] < current_time( 'mysql', true ) || (int) $intent['run_id'] !== $run_id || ! hash_equals( (string) $intent['claim_token'], $claim_token ) || (int) $intent['claim_generation'] !== $claim_generation ) {
+						return false;
+					}
+				}
+
 				return $this->update_run_row( $run_id, $fields ) && $this->mark_claim_intents_cancel_requested( $run_id, $claim_token, $claim_generation );
 			},
 			$claim_generation
@@ -794,7 +805,7 @@ final class DryRunRepository {
 	 * @param array<string,mixed>                               $run_fields
 	 * @param array{action_type:string,hook:string,page:int}|null $next
 	 */
-	public function persist_catalog_page_execution( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $hook, int $page, array $items, array $duplicate_upcs, array $run_fields, ?array $next ): bool {
+	public function persist_catalog_page_execution( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $hook, int $page, array $items, array $duplicate_upcs, array $run_fields, ?array $next, bool $keep_running = false ): bool {
 		return $this->with_running_intent(
 			$run_id,
 			$claim_token,
@@ -832,7 +843,37 @@ final class DryRunRepository {
 					)
 				);
 			},
-			$next
+			$next,
+			$keep_running
+		);
+	}
+
+	/** @param array<string,mixed> $diagnostics */
+	public function finish_catalog_execution( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $hook, int $next_page, array $diagnostics ): bool {
+		return $this->with_running_intent(
+			$run_id,
+			$claim_token,
+			$claim_generation,
+			$intent_id,
+			$intent_token,
+			$execution_token,
+			'catalog',
+			$hook,
+			$next_page,
+			'fetching_catalog',
+			'current_api_page',
+			fn(): bool => $this->update_run_row(
+				$run_id,
+				array(
+					'worker_diagnostics' => wp_json_encode( $diagnostics ),
+					'last_heartbeat_at'  => current_time( 'mysql', true ),
+				)
+			),
+			array(
+				'action_type' => 'catalog',
+				'hook'        => $hook,
+				'page'        => $next_page,
+			)
 		);
 	}
 
@@ -1078,7 +1119,7 @@ final class DryRunRepository {
 			if ( $run_id > 0 ) {
 				$run_table = $wpdb->prefix . 'ideaxperts_ea_dry_runs';
 				$run       = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$run_table} WHERE id = %d AND claim_token = %s AND claim_generation = %d FOR UPDATE", $run_id, $claim_token, $claim_generation ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				if ( ! is_array( $run ) || '' !== (string) ( $wpdb->last_error ?? '' ) || $run_status !== (string) ( $run['status'] ?? '' ) || ! in_array( $cursor_column, array( 'current_store_page', 'current_api_page' ), true ) || $page_number - 1 !== (int) ( $run[ $cursor_column ] ?? -1 ) ) { // phpcs:ignore WordPress.PHP.YodaConditions.NotYoda -- Both comparisons use runtime values.
+				if ( ! is_array( $run ) || '' !== (string) ( $wpdb->last_error ?? '' ) || $run_status !== (string) ( $run['status'] ?? '' ) || ! in_array( $cursor_column, array( 'current_store_page', 'current_api_page' ), true ) || ( 'catalog' === $action_type ? $page_number - 1 > (int) ( $run[ $cursor_column ] ?? -1 ) : $page_number - 1 !== (int) ( $run[ $cursor_column ] ?? -1 ) ) ) { // phpcs:ignore WordPress.PHP.YodaConditions.NotYoda -- Both comparisons use runtime values.
 					$this->rollback();
 					$open = false;
 					return '';
@@ -1095,6 +1136,10 @@ final class DryRunRepository {
 				(int) $intent['run_id'] === $run_id && hash_equals( (string) $intent['claim_token'], $claim_token ) &&
 				(int) $intent['claim_generation'] === $claim_generation && (string) $intent['action_type'] === $action_type &&
 				(string) $intent['hook'] === $hook && (int) $intent['page_number'] === $page_number;
+			// Only a previously started catalog execution may reclaim an advanced cursor.
+			if ( $valid && 'catalog' === $action_type && isset( $run ) && $page_number - 1 !== (int) $run['current_api_page'] && '' === (string) ( $intent['started_at'] ?? '' ) ) { // phpcs:ignore WordPress.PHP.YodaConditions.NotYoda -- Runtime cursor comparison.
+				$valid = false;
+			}
 			$status = is_array( $intent ) ? (string) ( $intent['status'] ?? '' ) : '';
 			$leased = 'running' === $status && '' !== (string) ( $intent['lease_expires_at'] ?? '' ) && (string) $intent['lease_expires_at'] <= $now;
 			if ( ! $valid || ( ! in_array( $status, array( 'dispatching', 'dispatched' ), true ) && ! $leased ) ) {
@@ -1136,6 +1181,7 @@ final class DryRunRepository {
 		}
 	}
 
+	/** @phpstan-impure Ownership can change between calls in another database session. */
 	public function refresh_intent_execution( int $intent_id, string $intent_token, string $execution_token ): bool {
 		if ( ! $this->session_usable || $intent_id < 1 || '' === $intent_token || '' === $execution_token ) {
 			return false;
@@ -1653,7 +1699,7 @@ final class DryRunRepository {
 	 * @param Closure():bool                                      $write
 	 * @param array{action_type:string,hook:string,page:int}|null $next
 	 */
-	private function with_running_intent( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $action_type, string $hook, int $page, string $run_status, string $cursor_column, Closure $write, ?array $next ): bool {
+	private function with_running_intent( int $run_id, string $claim_token, int $claim_generation, int $intent_id, string $intent_token, string $execution_token, string $action_type, string $hook, int $page, string $run_status, string $cursor_column, Closure $write, ?array $next, bool $keep_running = false ): bool {
 		global $wpdb;
 		if ( ! $this->session_usable || '' === $execution_token || false === $wpdb->query( 'START TRANSACTION' ) ) {
 			return false;
@@ -1673,7 +1719,7 @@ final class DryRunRepository {
 			$valid  = is_array( $intent ) && '' === (string) ( $wpdb->last_error ?? '' ) && 'running' === (string) ( $intent['status'] ?? '' ) &&
 				hash_equals( (string) ( $intent['execution_token'] ?? '' ), $execution_token ) && (string) ( $intent['lease_expires_at'] ?? '' ) >= $now &&
 				(int) $intent['run_id'] === $run_id && hash_equals( (string) $intent['claim_token'], $claim_token ) && (int) $intent['claim_generation'] === $claim_generation &&
-				(string) $intent['action_type'] === $action_type && (string) $intent['hook'] === $hook && (int) $intent['page_number'] === $page;
+				(string) $intent['action_type'] === $action_type && (string) $intent['hook'] === $hook && ( 'catalog' === $action_type ? (int) $intent['page_number'] <= $page : (int) $intent['page_number'] === $page );
 			if ( ! $valid || true !== $write() ) {
 				$this->rollback();
 				$open = false;
@@ -1687,8 +1733,9 @@ final class DryRunRepository {
 			$completed = $wpdb->update(
 				$table,
 				array(
-					'status'     => 'completed',
-					'updated_at' => $now,
+					'status'           => $keep_running ? 'running' : 'completed',
+					'lease_expires_at' => gmdate( 'Y-m-d H:i:s', strtotime( $now ) + self::EXECUTION_LEASE_SECONDS ),
+					'updated_at'       => $now,
 				),
 				array(
 					'id'              => $intent_id,
@@ -1697,7 +1744,9 @@ final class DryRunRepository {
 					'execution_token' => $execution_token,
 				)
 			);
-			if ( false === $completed || (int) $wpdb->rows_affected < 1 || false === $wpdb->query( 'COMMIT' ) ) {
+			// The locked row already proved all fences. A running lease refresh may
+			// be a same-second no-op; only false is a database failure.
+			if ( false === $completed || false === $wpdb->query( 'COMMIT' ) ) {
 				$this->rollback();
 				$open = false;
 				return false;
