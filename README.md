@@ -1,6 +1,6 @@
 # IdeaXperts Endless Aisles for WooCommerce
 
-Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Milestone 3C adds a guarded simple Draft creation and recovery path for approved new candidates, alongside 3B existing-product linking. Production creation currently blocks with `pricing_policy_missing`: this repository contains no approved Production pricing rule. QA can preview new candidates without catalog mutation. Inventory synchronization and order submission remain disabled.
+Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Controlled QA creation now reuses the guarded simple Draft creation and recovery path for 1 to 5 explicitly selected candidates. An approved server-side pricing configuration is mandatory; the repository enables no provisional merchant policy. Production product creation is disabled. Legacy QA preview approvals remain read-only. Inventory synchronization and order submission remain disabled. See [controlled QA creation](docs/CONTROLLED-QA-CREATION.md).
 
 ## Requirements
 

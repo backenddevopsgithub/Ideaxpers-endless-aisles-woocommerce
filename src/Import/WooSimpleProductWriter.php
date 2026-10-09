@@ -29,7 +29,7 @@ final class WooSimpleProductWriter implements SimpleProductWriterInterface {
 	 * @param array<string,string> $projection
 	 */
 	public function create_draft( array $item, array $projection ): int {
-		if ( 'production' !== $item['environment'] || 'endless-aisles:production' !== $item['source_scope'] || 'applying' !== $item['status'] || '' !== $projection['failure_code'] ) {
+		if ( 'qa' !== $item['environment'] || 'endless-aisles:qa' !== $item['source_scope'] || 'applying' !== $item['status'] || '' !== $projection['failure_code'] ) {
 			throw new \RuntimeException( 'creation_not_authoritative' );
 		}
 		$product = new \WC_Product_Simple();
@@ -48,7 +48,7 @@ final class WooSimpleProductWriter implements SimpleProductWriterInterface {
 	}
 
 	/** @param array<string,mixed> $item @return list<int> */
-	public function correlated_drafts( array $item ): array {
+	public function correlated_drafts( array $item, array $approved_binding = array() ): array {
 		global $wpdb;
 		$wpdb->last_error = '';
 		$ids              = $wpdb->get_col(
@@ -68,6 +68,9 @@ final class WooSimpleProductWriter implements SimpleProductWriterInterface {
 			$product = wc_get_product( (int) $id );
 			if ( ! $product instanceof \WC_Product_Simple || 'simple' !== $product->get_type() || 'draft' !== $product->get_status() || ! method_exists( $product, 'get_global_unique_id' ) || (string) $product->get_global_unique_id() !== (string) $item['normalized_upc'] ) {
 				throw new \RuntimeException( 'correlation_object_invalid' );
+			}
+			if ( $approved_binding && ( ! hash_equals( (string) $approved_binding['title_hash'], hash( 'sha256', (string) $product->get_name() ) ) || ! hash_equals( (string) $approved_binding['description_hash'], hash( 'sha256', (string) $product->get_description() ) ) || (string) $approved_binding['regular_price'] !== (string) $product->get_regular_price() ) ) {
+				throw new \RuntimeException( 'correlation_approved_fields_changed' );
 			}
 			$product->read_meta_data( true );
 			foreach ( $this->markers( $item ) as $key => $value ) {

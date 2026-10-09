@@ -3,7 +3,7 @@ namespace IdeaXperts\EndlessAisles\Import;
 
 defined( 'ABSPATH' ) || exit;
 
-/** Disabled unless a merchant supplies an explicit server-side direct-source approval. */
+/** Disabled unless a merchant supplies an explicit server-side direct-source and MAP approval. */
 final class ConfiguredCreationPricingPolicy implements CreationPricingPolicyInterface {
 
 	/** @param array<string,mixed> $configuration Nonsecret, business-approved configuration. */
@@ -19,7 +19,7 @@ final class ConfiguredCreationPricingPolicy implements CreationPricingPolicyInte
 
 	/** @return array<string,mixed> */
 	public function configuration(): array {
-		$config = $this->configuration;
+		$config = array_intersect_key( $this->configuration, array_flip( array( 'approval_reference', 'rule', 'source_field', 'currency', 'decimal_places', 'max_age_seconds', 'map_rule', 'zero_map_rule', 'minimum_price', 'maximum_price' ) ) );
 		ksort( $config, SORT_STRING );
 		return $config;
 	}
@@ -31,11 +31,14 @@ final class ConfiguredCreationPricingPolicy implements CreationPricingPolicyInte
 	/** @param array<string,mixed> $vendor */
 	public function failure_code( array $vendor ): string {
 		$config = $this->configuration;
-		if ( ! is_string( $config['approval_reference'] ?? null ) || '' === trim( $config['approval_reference'] ) || 'direct_source' !== ( $config['rule'] ?? '' ) || ! in_array( $config['source_field'] ?? '', array( 'retail_price', 'wholesale_price', 'map_price' ), true ) || ! is_int( $config['decimal_places'] ?? null ) || $config['decimal_places'] < 0 || $config['decimal_places'] > 4 || ! is_int( $config['max_age_seconds'] ?? null ) || $config['max_age_seconds'] < 1 ) {
+		if ( ! is_string( $config['approval_reference'] ?? null ) || '' === trim( $config['approval_reference'] ) || strlen( $config['approval_reference'] ) > 128 || 'direct_source' !== ( $config['rule'] ?? '' ) || ! in_array( $config['source_field'] ?? '', array( 'retail_price', 'wholesale_price', 'map_price' ), true ) || ! is_int( $config['decimal_places'] ?? null ) || $config['decimal_places'] < 0 || $config['decimal_places'] > 4 || ! is_int( $config['max_age_seconds'] ?? null ) || $config['max_age_seconds'] < 1 ) {
 			return 'pricing_configuration_invalid';
 		}
 		if ( ! is_string( $config['currency'] ?? null ) || 1 !== preg_match( '/\A[A-Z]{3}\z/', $config['currency'] ) || get_option( 'woocommerce_currency', '' ) !== $config['currency'] || (int) get_option( 'woocommerce_price_num_decimals', 2 ) !== $config['decimal_places'] ) {
 			return 'pricing_currency_unsupported';
+		}
+		if ( ! in_array( $config['map_rule'] ?? '', array( 'block_below_map', 'ignore_map' ), true ) || ! in_array( $config['zero_map_rule'] ?? '', array( 'no_restriction', 'block' ), true ) ) {
+			return 'pricing_configuration_invalid';
 		}
 		$observed = $vendor['source_observed_at'] ?? '';
 		$stamp    = is_string( $observed ) && 1 === preg_match( '/\A[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\z/', $observed ) ? strtotime( $observed . ' UTC' ) : false;
@@ -49,6 +52,19 @@ final class ConfiguredCreationPricingPolicy implements CreationPricingPolicyInte
 		}
 		if ( ! is_string( $price ) || ! self::valid_decimal( $price, $config['decimal_places'] ) ) {
 			return 'pricing_source_invalid';
+		}
+		if ( 'block_below_map' === $config['map_rule'] ) {
+			$map = $vendor['map_price'] ?? null;
+			if ( ! is_string( $map ) || ! preg_match( '/\A[0-9]{1,8}(?:\.[0-9]{1,4})?\z/', $map ) || strlen( explode( '.', $map )[1] ?? '' ) > $config['decimal_places'] ) {
+				return 'pricing_map_invalid';
+			}
+			if ( strspn( $map, '0.' ) === strlen( $map ) ) {
+				if ( 'block' === $config['zero_map_rule'] ) {
+					return 'pricing_zero_map_review';
+				}
+			} elseif ( strcmp( self::comparable( $price ), self::comparable( $map ) ) < 0 ) {
+				return 'pricing_below_map';
+			}
 		}
 		foreach ( array( 'minimum_price', 'maximum_price' ) as $bound ) {
 			if ( ! isset( $config[ $bound ] ) ) {

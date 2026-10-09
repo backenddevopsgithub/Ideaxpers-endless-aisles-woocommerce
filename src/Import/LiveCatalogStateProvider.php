@@ -38,7 +38,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 			$sku = $upc;
 		}
 		$target     = $this->target( $product_id, $variation_id, $creation );
-		$owners     = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc', $creation );
+		$owners     = '' === $upc ? array() : $this->identifier_owners( $upc, 'upc', $creation, array_merge( $item, array( 'source_scope' => $source_scope ) ) );
 		$sku_owners = '' === $sku ? array() : $this->identifier_owners( $sku, 'sku' );
 		if ( 'production' === $environment ) {
 			foreach ( $owners as $owner ) {
@@ -48,7 +48,7 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 			}
 		}
 		$mappings = $this->mappings(
-			'qa' === $environment ? 'endless-aisles:production' : $source_scope,
+			'qa' === $environment && ! $creation ? 'endless-aisles:production' : $source_scope,
 			(string) ( $item['ea_product_id'] ?? '' ),
 			(string) ( $item['ea_option_id'] ?? '' ),
 			$product_id,
@@ -106,8 +106,11 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 			&& in_array( $parent['status'] ?? '', array( 'publish', 'private', 'draft', 'pending', 'future' ), true );
 	}
 
-	/** @return list<string> */
-	private function identifier_owners( string $identifier, string $kind, bool $creation = false ): array {
+	/**
+	 * @param array<string,mixed> $item
+	 * @return list<string>
+	 */
+	private function identifier_owners( string $identifier, string $kind, bool $creation = false, array $item = array() ): array {
 		$owners = array();
 		// Products and variations are separate bounded queries so one variable
 		// product cannot materialize its complete child-ID collection.
@@ -129,6 +132,9 @@ final class LiveCatalogStateProvider implements CatalogStateProviderInterface {
 				$pages    = is_object( $result ) && isset( $result->max_num_pages ) ? max( 1, (int) $result->max_num_pages ) : $page;
 				foreach ( $products as $product ) {
 					if ( is_object( $product ) ) {
+						if ( $creation && method_exists( $product, 'get_meta' ) && method_exists( $product, 'get_id' ) && (string) $product->get_meta( '_ideaxperts_ea_create_scope', true ) === (string) ( $item['source_scope'] ?? '' ) && (string) $product->get_meta( '_ideaxperts_ea_create_product', true ) === (string) ( $item['ea_product_id'] ?? '' ) && (string) $product->get_meta( '_ideaxperts_ea_create_option', true ) === (string) ( $item['ea_option_id'] ?? '' ) && (int) $product->get_id() !== (int) ( $item['target_wc_product_id'] ?? $item['wc_product_id'] ?? 0 ) ) {
+							throw new CatalogInspectionConflict( 'Vendor correlation already belongs to a WooCommerce object.' );
+						}
 						$parent_id = method_exists( $product, 'get_parent_id' ) ? (int) $product->get_parent_id() : 0;
 						$this->record_owner( $owners, $product, $parent_id, $identifier, $kind, $creation );
 					}

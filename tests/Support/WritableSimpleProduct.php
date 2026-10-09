@@ -18,6 +18,9 @@ class WritableSimpleProduct {
 	}
 	public function get_type(): string { return 'simple'; }
 	public function read_meta_data( bool $force_read = false ): void {}
+	public function get_name(): string { return $this->fields['name']; }
+	public function get_description(): string { return $this->fields['description']; }
+	public function get_regular_price(): string { return $this->fields['regular_price']; }
 	public function get_status(): string { return $this->fields['status']; }
 	public function get_global_unique_id(): string { return $this->fields['global_unique_id']; }
 	public function get_meta( string $key, bool $single = true ): mixed { return $this->meta[ $key ] ?? ''; }

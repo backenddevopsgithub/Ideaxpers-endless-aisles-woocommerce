@@ -34,6 +34,7 @@ final class SimpleProductCreationTest extends TestCase {
 
 	protected function setUp(): void {
 		$GLOBALS['ea_now'] = '2026-10-02 12:00:00';
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array( 'environment' => 'qa' );
 		$GLOBALS['ea_action_queue'] = array();
 		$GLOBALS['ea_enqueue_failure'] = false;
 		$GLOBALS['ea_recovery_actions'] = array();
@@ -47,14 +48,16 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->vendor = array( 'id' => 1, 'classification' => 'new_product_candidate', 'review_flags' => '[]', 'ea_product_id' => 'p', 'ea_option_id' => 'o', 'normalized_upc' => '001234567890', 'wc_product_id' => 0, 'wc_variation_id' => 0, 'vendor_title' => '<b>Safe title</b>', 'vendor_option_description' => '<p onclick="bad()">Description</p><script>bad()</script>', 'retail_price' => '10', 'purchasable' => 1, 'discontinued' => 0 );
 	}
 
-	private function approve( string $environment = 'production', bool $pricing = true, ?CreationPricingPolicyInterface $policy = null ): void {
+	private function approve( string $environment = 'qa', bool $pricing = true, ?CreationPricingPolicyInterface $policy = null, bool $controlled = true ): void {
 		$this->pricing = $pricing ? ( $policy ?? new FixturePricingPolicy() ) : null;
 		$this->projection = new SimpleProductProjection( $this->pricing );
 		$this->creation = new SimpleProductCreation( $this->imports, $this->writer, $this->projection );
 		$this->manager = new ImportManager( $this->imports, $this->creation );
 		$this->manager->register();
 		do_action( 'init' );
-		$built = ( new ApprovalManifest( new ImportPolicy(), $this->live_state ?? $this->state, $this->projection ) )->build( array( 'id' => count( $this->db->tables['wp_ideaxperts_ea_import_runs'] ) + 1, 'status' => 'completed', 'environment' => $environment ), array( $this->vendor ), array(), 1, array() );
+		$this->vendor['environment'] = $environment;
+		$this->vendor['source_scope'] = 'endless-aisles:' . $environment;
+		$built = ( new ApprovalManifest( new ImportPolicy(), $this->live_state ?? $this->state, $this->projection ) )->build( array( 'id' => count( $this->db->tables['wp_ideaxperts_ea_import_runs'] ) + 1, 'status' => 'completed', 'environment' => $environment, 'source_scope' => 'endless-aisles:' . $environment, 'completed_at' => $GLOBALS['ea_now'] ), array( $this->vendor ), array(), 1, array( 'controlled_qa_creation' => $controlled, 'allow_sku_upc_match' => $GLOBALS['ea_test_options']['ideaxperts_ea_settings']['allow_sku_upc_match'] ?? 'no' ) );
 		$this->run = $this->imports->create_from_manifest( $built['manifest'], $built['hash'], 7 );
 		self::assertGreaterThan( 0, $this->run );
 		self::assertTrue( $this->manager->queue( $this->run ) );
@@ -149,7 +152,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->use_live_catalog();
 		$this->approve();
 		self::assertTrue( $this->permit( $this->ready() ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$this->expire();
 		$this->fail_live_mapping_read();
 		$this->scheduled_recovery();
@@ -175,7 +178,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->use_live_catalog();
 		$this->approve();
 		self::assertTrue( $this->permit( $this->ready() ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$operation = $this->item()['operation_uuid'];
 		$this->expire();
 		$this->fail_live_mapping_read();
@@ -235,7 +238,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->approve();
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$operation = $this->item()['operation_uuid'];
 		$id = (int) $this->item()['id'];
 		$this->expire();
@@ -301,33 +304,19 @@ final class SimpleProductCreationTest extends TestCase {
 	}
 
 	public function test_missing_production_policy_blocks_without_external_intent(): void {
-		$this->approve( 'production', false );
+		$this->approve( 'qa', false );
 		$this->deliver_callback();
 		self::assertSame( 'blocked', $this->item()['status'] );
 		self::assertSame( 'pricing_policy_missing', $this->item()['failure_code'] );
 		self::assertSame( 0, $this->writer->saves );
 		self::assertSame( array(), $this->db->tables['wp_ideaxperts_ea_catalog_identities'] );
 		self::assertSame( array(), $this->db->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
-		$this->approve( 'production', true );
+		$this->approve( 'qa', true );
 		$this->deliver_callback();
 		self::assertSame( 'applied', $this->item()['status'] );
 		self::assertSame( 1, $this->writer->saves );
 	}
 
-	public function test_qa_preview_is_reusable_and_cannot_save_or_claim_global_ownership(): void {
-		$this->approve( 'qa', false );
-		$this->deliver_callback();
-		$this->deliver_callback();
-		self::assertSame( 'applied', $this->item()['status'] );
-		self::assertSame( 0, $this->writer->saves );
-		self::assertSame( 0, $this->mapping_count() );
-		self::assertNull( $this->db->tables['wp_ideaxperts_ea_catalog_identities'][0]['wc_identity_key'] );
-		self::assertSame( 'released', $this->db->tables['wp_ideaxperts_ea_store_identifier_reservations'][0]['reservation_status'] );
-		$this->approve( 'qa', false );
-		$this->deliver_callback();
-		self::assertSame( 'applied', $this->item()['status'] );
-		self::assertSame( 0, $this->writer->saves );
-	}
 
 	public function test_exception_after_persistence_adopts_exact_draft_without_second_save(): void {
 		$this->approve();
@@ -410,7 +399,7 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( 0, $this->writer->saves );
 	}
 
-	public static function environments(): array { return array( array( 'qa' ), array( 'production' ) ); }
+	public static function environments(): array { return array( array( 'qa' ), array( 'qa' ) ); }
 
 	public function test_cancellation_after_save_adopts_draft_before_settling_run(): void {
 		$this->approve();
@@ -482,7 +471,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
 		$item = $this->item();
-		self::assertSame( 501, $this->writer->create_draft( $item, array() ) );
+		self::assertSame( 501, $this->writer->create_draft( $item, $this->projection->build( $this->imports->creation_snapshot( (int) $item['id'] ) ) ) );
 		// Simulate worker death: no coordinator/finalizer runs in this execution.
 		$this->deliver_callback();
 		self::assertSame( 'applying', $this->item()['status'] );
@@ -528,7 +517,7 @@ final class SimpleProductCreationTest extends TestCase {
 				$row['wc_identity_key'] = hash( 'sha256', '501:0' );
 				$this->db->tables['wp_ideaxperts_ea_catalog_identities'][] = $row;
 			} else {
-				$this->db->tables['wp_ideaxperts_ea_mappings'][] = array( 'id' => 999, 'source_scope' => 'endless-aisles:production', 'environment' => 'production', 'wc_product_id' => 999, 'wc_variation_id' => 0, 'ea_product_id' => $item['ea_product_id'], 'ea_option_id' => $item['ea_option_id'], 'normalized_upc' => $item['normalized_upc'], 'mapping_status' => 'active' );
+				$this->db->tables['wp_ideaxperts_ea_mappings'][] = array( 'id' => 999, 'source_scope' => 'endless-aisles:qa', 'environment' => 'qa', 'wc_product_id' => 999, 'wc_variation_id' => 0, 'ea_product_id' => $item['ea_product_id'], 'ea_option_id' => $item['ea_option_id'], 'normalized_upc' => $item['normalized_upc'], 'mapping_status' => 'active' );
 			}
 		};
 		$this->deliver_callback();
@@ -558,7 +547,7 @@ final class SimpleProductCreationTest extends TestCase {
 
 	/** @dataProvider creatorTakeovers */
 	public function test_original_creator_is_fenced_after_recovery_takeover( string $ordering, bool $ambiguous ): void {
-		$this->approve( 'production', true, new FixturePricingPolicy( '20.00' ) );
+		$this->approve( 'qa', true, new FixturePricingPolicy( '20.00' ) );
 		$this->writer->mode = $ambiguous ? 'ambiguous' : 'success';
 		$token = '';
 		$owned = array();
@@ -634,7 +623,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->approve();
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		if ( 'expired' === $invalid ) { $this->expire(); }
 		$token = 'empty' === $invalid ? '' : ( 'wrong' === $invalid ? 'wrong' : $ready[1] );
 		$before = $this->db->tables;
@@ -651,7 +640,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->approve();
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$before = $this->db->tables;
 		$this->db->throw_update_table_contains = 'import_actions';
 		try {
@@ -713,7 +702,7 @@ final class SimpleProductCreationTest extends TestCase {
 	}
 
 	public function test_missing_policy_added_after_approval_requires_explicit_reapproval(): void {
-		$this->approve( 'production', false );
+		$this->approve( 'qa', false );
 		$before = $this->imports->run( $this->run );
 		$this->replace_policy( new FixturePricingPolicy( '20.00' ) );
 		$this->deliver_callback();
@@ -725,7 +714,7 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( $before['manifest_hash'], $this->imports->run( $this->run )['manifest_hash'] );
 		self::assertSame( $before['approval_generation'], $this->imports->run( $this->run )['approval_generation'] );
 		self::assertSame( array(), $this->db->tables['wp_ideaxperts_ea_catalog_identities'] );
-		$this->approve( 'production', true, $this->pricing );
+		$this->approve( 'qa', true, $this->pricing );
 		self::assertNotSame( $before['manifest_hash'], $this->imports->run( $this->run )['manifest_hash'] );
 		self::assertSame( '20.00', $this->imports->approved_creation_binding( (int) $this->item()['id'] )['regular_price'] );
 		$this->deliver_callback();
@@ -736,7 +725,7 @@ final class SimpleProductCreationTest extends TestCase {
 
 	/** @dataProvider pricingChanges */
 	public function test_pricing_identity_version_config_removal_and_price_changes_require_reapproval( string $change ): void {
-		$this->approve( 'production', true, new FixturePricingPolicy( '20.00' ) );
+		$this->approve( 'qa', true, new FixturePricingPolicy( '20.00' ) );
 		if ( 'removed' === $change ) { $this->replace_policy( null ); }
 		else { $this->pricing->$change = 'price' === $change ? '25.00' : 'changed'; }
 		$this->deliver_callback();
@@ -757,7 +746,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->vendor['created_at'] = $GLOBALS['ea_now'];
 		$this->vendor['retail_price'] = '20';
 		$policy = new ConfiguredCreationPricingPolicy( ConfiguredCreationPricingPolicyTest::config() );
-		$this->approve( 'production', true, $policy );
+		$this->approve( 'qa', true, $policy );
 		self::assertSame( '20.00', $this->imports->approved_creation_binding( (int) $this->item()['id'] )['regular_price'] );
 		$row = &$this->db->tables['wp_ideaxperts_ea_vendor_snapshots'][0];
 		$original = $row;
@@ -773,7 +762,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$row = $original;
 		$this->db->tables['wp_ideaxperts_ea_import_items'][0]['expected_vendor_hash'] = $original['payload_hash'];
 		$this->vendor['retail_price'] = '25';
-		$this->approve( 'production', true, $policy );
+		$this->approve( 'qa', true, $policy );
 		$this->deliver_callback();
 		self::assertSame( 'applied', $this->item()['status'] );
 		self::assertSame( '25.00', $this->writer->objects[501]['projection']['regular_price'] );
@@ -785,7 +774,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$GLOBALS['ea_test_options']['woocommerce_price_num_decimals'] = 2;
 		$this->vendor['created_at'] = $GLOBALS['ea_now'];
 		$config = ConfiguredCreationPricingPolicyTest::config();
-		$this->approve( 'production', true, new ConfiguredCreationPricingPolicy( $config ) );
+		$this->approve( 'qa', true, new ConfiguredCreationPricingPolicy( $config ) );
 		$config['approval_reference'] = 'different-approved-decision';
 		$this->replace_policy( new ConfiguredCreationPricingPolicy( $config ) );
 		$this->deliver_callback();
@@ -824,7 +813,7 @@ final class SimpleProductCreationTest extends TestCase {
 	}
 
 	public function test_scheduled_worker_recovers_dead_creator_using_original_price_after_policy_change(): void {
-		$this->approve( 'production', true, new FixturePricingPolicy( '20.00' ) );
+		$this->approve( 'qa', true, new FixturePricingPolicy( '20.00' ) );
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
 		$vendor = $this->imports->creation_snapshot( (int) $this->item()['id'] );
@@ -856,7 +845,7 @@ final class SimpleProductCreationTest extends TestCase {
 	public function test_stale_recovery_after_cancellation_cannot_settle_or_clean_up_current_owner(): void {
 		$this->approve();
 		self::assertTrue( $this->permit( $this->ready() ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$this->expire();
 		$first = $this->imports->claim_creation_recovery( (int) $this->item()['id'] );
 		self::assertNotSame( '', $first );
@@ -899,7 +888,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->approve();
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
-		if ( 'missing' !== $mode ) { $this->writer->create_draft( $this->item(), array() ); }
+		if ( 'missing' !== $mode ) { $this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) ); }
 		if ( 'multiple' === $mode ) { $this->writer->objects[502] = $this->writer->objects[501]; }
 		if ( 'invalid' === $mode ) { $this->writer->objects[501]['status'] = 'publish'; }
 		if ( 'upc' === $mode ) { $this->state->upc_owners[] = '999:0'; }
@@ -921,7 +910,7 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( '', $this->imports->claim_creation_recovery( (int) $this->item()['id'] ) );
 		$this->scheduled_recovery();
 		self::assertSame( 0, $this->writer->lookups );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$this->expire();
 		$token = $this->imports->claim_creation_recovery( (int) $this->item()['id'] );
 		self::assertNotSame( '', $token );
@@ -964,7 +953,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->approve();
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		self::assertTrue( $this->imports->request_cancellation( $this->run ) );
 		$this->expire();
 		$this->scheduled_recovery();
@@ -991,7 +980,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->approve();
 		$ready = $this->ready();
 		self::assertTrue( $this->permit( $ready ) );
-		$this->writer->create_draft( $this->item(), array() );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) );
 		$this->expire();
 		$this->db->fail_insert_table_contains = 'mappings';
 		$this->scheduled_recovery();
@@ -1036,10 +1025,86 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( array(), $this->db->tables['wp_ideaxperts_ea_catalog_identities'] );
 		self::assertSame( array(), $this->db->tables['wp_ideaxperts_ea_store_identifier_reservations'] );
 		self::assertSame( 0, $this->writer->saves );
-		$this->approve( 'production', true, $this->pricing );
+		$this->approve( 'qa', true, $this->pricing );
 		$this->deliver_callback();
 		self::assertSame( 'applied', $this->item()['status'] );
 		self::assertSame( '25.00', $this->writer->objects[501]['projection']['regular_price'] );
 		self::assertSame( 1, $this->writer->saves );
 	}
+	public function test_qa_preview_is_reusable_and_cannot_save_or_claim_global_ownership(): void {
+		$this->approve( 'qa', false, null, false );
+		$this->deliver_callback();
+		$this->deliver_callback();
+		self::assertSame( 'applied', $this->item()['status'] );
+		self::assertSame( 0, $this->writer->saves );
+		self::assertSame( 0, $this->mapping_count() );
+		self::assertNull( $this->db->tables['wp_ideaxperts_ea_catalog_identities'][0]['wc_identity_key'] );
+		self::assertSame( 'released', $this->db->tables['wp_ideaxperts_ea_store_identifier_reservations'][0]['reservation_status'] );
+		$this->approve( 'qa', false, null, false );
+		$this->deliver_callback();
+		self::assertSame( 'applied', $this->item()['status'] );
+		self::assertSame( 0, $this->writer->saves );
+	}
+	public function test_created_qa_option_is_linked_on_second_comparison_and_cannot_be_created_again(): void {
+		$this->approve();
+		$this->deliver_callback();
+		$this->assert_creation_adopted_once();
+		$mapping = $this->db->tables['wp_ideaxperts_ea_mappings'][0];
+		self::assertSame( 'qa', $mapping['environment'] );
+		self::assertSame( 'endless-aisles:qa', $mapping['source_scope'] );
+		$classifier = new \IdeaXperts\EndlessAisles\Catalog\MatchClassifier();
+		$option = array( 'ea_product_id' => 'p', 'id' => 'o', 'upc' => $this->vendor['normalized_upc'], 'retail_price' => '10', 'purchasability' => true );
+		self::assertSame( 'new_product_candidate', $classifier->classify( $option, array(), array(), array(), false, false )['classification'] );
+		self::assertSame( 'already_linked', $classifier->classify( $option, array( $mapping ), array(), array(), false, false )['classification'] );
+		$this->state->mappings = array( $mapping );
+		try {
+			$this->approve();
+			self::fail( 'An already linked option cannot receive a second creation approval.' );
+		} catch ( \RuntimeException $error ) {
+			self::assertSame( 'New creation requires current mapping and UPC absence.', $error->getMessage() );
+		}
+		self::assertSame( 1, $this->writer->saves );
+		self::assertSame( 1, $this->mapping_count() );
+	}
+	/** @dataProvider scopeChanges */
+	public function test_qa_source_expiry_or_production_settings_fence_final_permit( bool $expired ): void {
+		$this->approve();
+		$ready = $this->ready();
+		if ( $expired ) {
+			// Keep leases live to isolate the dry-run freshness check.
+			foreach ( $this->db->tables['wp_ideaxperts_ea_import_runs'] as &$run ) {
+				$manifest = json_decode( $run['approval_manifest'], true );
+				$manifest['source_completed_at'] = '2026-09-30 12:00:00';
+				$run['approval_manifest'] = wp_json_encode( $manifest );
+				$run['manifest_hash'] = ApprovalManifest::hash( $manifest );
+			}
+			unset( $run );
+		} else {
+			$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['environment'] = 'production';
+		}
+		self::assertFalse( $this->permit( $ready ) );
+		self::assertSame( 0, $this->writer->saves );
+	}
+	public static function scopeChanges(): array { return array( array( true ), array( false ) ); }
+	public function test_recovery_rejects_changed_original_price_without_recreating(): void {
+		$this->approve();
+		self::assertTrue( $this->permit( $this->ready() ) );
+		$vendor = $this->imports->creation_snapshot( (int) $this->item()['id'] );
+		$this->writer->create_draft( $this->item(), $this->projection->build( $vendor ) );
+		$this->writer->objects[501]['projection']['regular_price'] = '999.00';
+		$this->expire();
+		$this->manager->reconcile();
+		self::assertSame( 'manual_recovery', $this->item()['status'] );
+		self::assertSame( 1, $this->writer->saves );
+		self::assertSame( 0, $this->mapping_count() );
+	}
+
+	public function test_matching_configuration_change_requires_reapproval_before_save(): void {
+		$this->approve();
+		$ready = $this->ready();
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['allow_sku_upc_match'] = 'yes';
+		self::assertFalse( $this->permit( $ready ) );
+		self::assertSame( 0, $this->writer->saves );
+	}
+
 }

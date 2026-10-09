@@ -36,7 +36,7 @@ final class FakeSimpleProductWriter implements SimpleProductWriterInterface {
 		return 'mismatch' === $this->mode ? 999 : 501;
 	}
 
-	public function correlated_drafts( array $item ): array {
+	public function correlated_drafts( array $item, array $approved_binding = array() ): array {
 		++$this->lookups;
 		if ( is_callable( $this->before_lookup ) ) { ( $this->before_lookup )(); }
 		if ( $this->lookup_failure ) { throw new \RuntimeException( 'correlation_read_failed' ); }
@@ -52,6 +52,9 @@ final class FakeSimpleProductWriter implements SimpleProductWriterInterface {
 			}
 			if ( 'simple' !== $object['type'] || 'draft' !== $object['status'] ) {
 				throw new \RuntimeException( 'Wrong object' );
+			}
+			if ( $approved_binding && ( $approved_binding['regular_price'] !== $object['projection']['regular_price'] || $approved_binding['title_hash'] !== hash( 'sha256', $object['projection']['title'] ) || $approved_binding['description_hash'] !== hash( 'sha256', $object['projection']['description'] ) ) ) {
+				throw new \RuntimeException( 'correlation_approved_fields_changed' );
 			}
 			$ids[] = $id;
 		}

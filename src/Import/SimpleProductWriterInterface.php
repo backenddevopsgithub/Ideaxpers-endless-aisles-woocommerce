@@ -13,7 +13,8 @@ interface SimpleProductWriterInterface {
 	/**
 	 * Return at most two exact operation matches. Throw on failed read or invalid correlation.
 	 * @param array<string,mixed> $item
+	 * @param array<string,mixed> $approved_binding
 	 * @return list<int>
 	 */
-	public function correlated_drafts( array $item ): array;
+	public function correlated_drafts( array $item, array $approved_binding = array() ): array;
 }

@@ -7,7 +7,7 @@ use PHPUnit\Framework\TestCase;
 
 final class ConfiguredCreationPricingPolicyTest extends TestCase {
 	public static function config(): array {
-		return array( 'approval_reference' => 'test-only-merchant-decision', 'rule' => 'direct_source', 'source_field' => 'retail_price', 'currency' => 'USD', 'decimal_places' => 2, 'max_age_seconds' => 300 );
+		return array( 'approval_reference' => 'test-only-merchant-decision', 'rule' => 'direct_source', 'source_field' => 'retail_price', 'currency' => 'USD', 'decimal_places' => 2, 'max_age_seconds' => 300, 'map_rule' => 'ignore_map', 'zero_map_rule' => 'block' );
 	}
 	protected function setUp(): void {
 		$GLOBALS['ea_now'] = '2026-10-02 12:00:00';
@@ -55,4 +55,26 @@ final class ConfiguredCreationPricingPolicyTest extends TestCase {
 	public static function staleSources(): array {
 		return array( array( '' ), array( 'invalid' ), array( '2026-10-02 11:54:59' ), array( '2026-10-02 12:00:01' ) );
 	}
+	/** @dataProvider mapRules */
+	public function test_map_and_zero_map_follow_explicit_configuration( string $rule, string $zero, string $map, string $failure ): void {
+		$config = self::config();
+		$config['map_rule'] = $rule;
+		$config['zero_map_rule'] = $zero;
+		$policy = new ConfiguredCreationPricingPolicy( $config );
+		$vendor = array( 'retail_price' => '20', 'map_price' => $map, 'source_observed_at' => $GLOBALS['ea_now'] );
+		self::assertSame( $failure, $policy->failure_code( $vendor ) );
+		self::assertSame( '' === $failure ? '20.00' : null, $policy->regular_price( $vendor ) );
+	}
+	public static function mapRules(): array {
+		return array( array( 'block_below_map', 'no_restriction', '25', 'pricing_below_map' ), array( 'block_below_map', 'no_restriction', '20', '' ), array( 'block_below_map', 'no_restriction', '0.00', '' ), array( 'block_below_map', 'block', '0', 'pricing_zero_map_review' ), array( 'block_below_map', 'block', '', 'pricing_map_invalid' ), array( 'ignore_map', 'block', '25', '' ), array( '', 'block', '0', 'pricing_configuration_invalid' ), array( 'block_below_map', '', '0', 'pricing_configuration_invalid' ) );
+	}
+
+	public function test_preview_configuration_excludes_unrecognized_secret_fields(): void {
+		$config = self::config();
+		$config['api_token'] = 'secret-fixture-must-not-appear';
+		$policy = new ConfiguredCreationPricingPolicy( $config );
+		self::assertArrayNotHasKey( 'api_token', $policy->configuration() );
+		self::assertStringNotContainsString( 'secret-fixture-must-not-appear', wp_json_encode( $policy->configuration() ) );
+	}
+
 }

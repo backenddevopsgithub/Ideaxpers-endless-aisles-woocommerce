@@ -48,6 +48,50 @@ final class ImportRepository {
 
 	public function __construct( private readonly ?CatalogStateProviderInterface $catalog_state = null ) {}
 
+	/** @param array<string,mixed> $item */
+	private function controlled_qa( array $item ): bool {
+		$vendor = $this->creation_snapshot( (int) $item['id'] );
+		return 'create' === ( $item['approved_action'] ?? '' ) && 'qa' === ( $item['environment'] ?? '' ) && 'endless-aisles:qa' === ( $item['source_scope'] ?? '' ) && 'controlled_qa' === ( $vendor['creation_mode'] ?? '' );
+	}
+
+	/** @param array<string,mixed> $run */
+	private function controlled_source_current( array $run ): bool {
+		return '' === $this->controlled_context_failure( $run );
+	}
+
+	/** @param array<string,mixed> $run */
+	private function controlled_context_failure( array $run ): string {
+		$manifest = json_decode( (string) $run['approval_manifest'], true );
+		$settings = get_option( 'ideaxperts_ea_settings', array() );
+		if ( ! is_array( $manifest ) || 'controlled_qa' !== ( $manifest['creation_mode'] ?? '' ) || 'qa' !== $run['environment'] || ! is_array( $settings ) || 'qa' !== ( $settings['environment'] ?? 'qa' ) ) {
+			return 'creation_environment_mismatch';
+		}
+		if ( ! ApprovalManifest::qa_source_fresh( (string) ( $manifest['source_completed_at'] ?? '' ) ) ) {
+			return 'creation_source_stale';
+		}
+		return hash_equals(
+			(string) $run['matching_settings_hash'],
+			ApprovalManifest::hash(
+				array(
+					'controlled_qa_creation' => true,
+					'allow_sku_upc_match'    => $settings['allow_sku_upc_match'] ?? 'no',
+				)
+			)
+		) ? '' : 'approval_projection_changed';
+	}
+
+	/** @param array<string,mixed> $item */
+	public function creation_context_failure( array $item ): string {
+		if ( 'production' === $item['environment'] ) {
+			return 'creation_environment_mismatch';
+		}
+		if ( ! $this->controlled_qa( $item ) ) {
+			return ''; // Legacy QA approvals retain read-only preview semantics.
+		}
+		$run = $this->run( (int) $item['import_run_id'] );
+		return $run ? $this->controlled_context_failure( $run ) : 'creation_snapshot_invalid';
+	}
+
 	/** @param array<string,mixed> $manifest */
 	public function create_from_manifest( array $manifest, string $manifest_hash, int $actor_id ): int {
 		$json = wp_json_encode( $manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
@@ -59,6 +103,16 @@ final class ImportRepository {
 		$items       = $manifest['items'] ?? null;
 		if ( ! in_array( $environment, array( 'qa', 'production' ), true ) || 'endless-aisles:' . $environment !== $scope || ImportPolicy::VERSION !== (string) ( $manifest['policy_version'] ?? '' ) || (int) ( $manifest['dry_run_id'] ?? 0 ) < 1 || (int) ( $manifest['dry_run_generation'] ?? 0 ) < 1 || (int) ( $manifest['approval_generation'] ?? 0 ) < 1 || 64 !== strlen( (string) ( $manifest['matching_settings_hash'] ?? '' ) ) || ! is_array( $items ) || ! array_is_list( $items ) || array() === $items ) {
 			return 0;
+		}
+		if ( 'controlled_qa' === ( $manifest['creation_mode'] ?? '' ) ) {
+			if ( 'qa' !== $environment || count( $items ) > ApprovalManifest::MAX_QA_CREATIONS || ! ApprovalManifest::qa_source_fresh( (string) ( $manifest['source_completed_at'] ?? '' ) ) ) {
+				return 0;
+			}
+			foreach ( $items as $selected ) {
+				if ( ! is_array( $selected ) || 'create' !== ( $selected['action'] ?? '' ) || 'controlled_qa' !== ( $selected['vendor']['creation_mode'] ?? '' ) || 'controlled_qa' !== ( $selected['creation_binding']['creation_mode'] ?? '' ) ) {
+					return 0;
+				}
+			}
 		}
 		global $wpdb;
 		if ( ! $this->begin() ) {
@@ -411,7 +465,7 @@ final class ImportRepository {
 					'wc_identity_key'       => null,
 					'wc_product_id'         => null,
 					'wc_variation_id'       => null,
-					'ownership_mode'        => 'qa' === $item['environment'] ? 'preview_only' : ( 'link' === $item['approved_action'] ? 'linked_existing' : 'vendor_created' ),
+					'ownership_mode'        => 'qa' === $item['environment'] && ! $this->controlled_qa( $item ) ? 'preview_only' : ( 'link' === $item['approved_action'] ? 'linked_existing' : 'vendor_created' ),
 					'vendor_state_hash'     => '',
 					'owner_token'           => $token,
 					'created_at'            => $now,
@@ -454,7 +508,7 @@ final class ImportRepository {
 	}
 
 	/**
-	 * Reserve a store-level UPC. Production creation uses one installation-wide
+	 * Reserve a store-level UPC. Controlled QA creation uses one installation-wide
 	 * namespace; QA uses a preview namespace and can never authorize a real write.
 	 */
 	public function reserve_upc( int $identity_id, int $item_id, string $token ): int {
@@ -469,7 +523,7 @@ final class ImportRepository {
 			if ( ! $item || ! $identity || '' === (string) $item['normalized_upc'] || ! hash_equals( (string) $item['execution_token'], $token ) || (int) $identity['owning_import_item_id'] !== $item_id || ! hash_equals( (string) $identity['owner_token'], $token ) || (string) $identity['source_scope'] !== (string) $item['source_scope'] || (string) $identity['environment'] !== (string) $item['environment'] ) {
 				return $this->abort_int( $open );
 			}
-			$namespace      = 'production' === $item['environment'] ? 'woocommerce_catalog' : 'preview:qa';
+			$namespace      = ( 'production' === $item['environment'] || $this->controlled_qa( $item ) ) ? 'woocommerce_catalog' : 'preview:qa';
 			$key            = hash( 'sha256', $namespace . "\0upc\0" . $item['normalized_upc'] );
 			$now            = current_time( 'mysql', true );
 			$ok             = $wpdb->insert(
@@ -539,13 +593,13 @@ final class ImportRepository {
 		$open = true;
 		try {
 			$context = $this->locked_final_permit_context( $item_id, $identity_id, $token, $approval_generation, $action_id, $logical_key, $dispatch_generation, $action_execution_token, true );
-			if ( ! $context || 'production' !== $context['run']['environment'] || 'create' !== $context['item']['approved_action'] || ! $this->creation_binding_matches( $item_id, $creation_binding ) ) {
+			if ( ! $context || ! $this->controlled_source_current( $context['run'] ) || ! $this->controlled_qa( $context['item'] ) || 'create' !== $context['item']['approved_action'] || ! $this->creation_binding_matches( $item_id, $creation_binding ) ) {
 				return $this->abort( $open );
 			}
 			try {
 				$vendor  = $this->creation_snapshot( $item_id );
 				$desired = $vendor ? $projection->build( $vendor ) : null;
-				$current = $vendor && $desired ? $projection->binding( $vendor, 'production', $desired ) : array();
+				$current = $vendor && $desired ? $projection->binding( $vendor, 'qa', $desired ) : array();
 				if ( ! $desired || '' !== $desired['failure_code'] || ! $this->creation_binding_matches( $item_id, $current ) || ! hash_equals( ApprovalManifest::hash( $current ), ApprovalManifest::hash( $creation_binding ) ) ) {
 					return $this->abort( $open );
 				}
@@ -846,7 +900,7 @@ final class ImportRepository {
 			$run  = $this->locked_run( (int) $hint['import_run_id'] );
 			$item = $this->locked_item( $item_id );
 			$now  = current_time( 'mysql', true );
-			if ( ! $run || ! $item || 'production' !== $item['environment'] || 'create' !== $item['approved_action'] || ! in_array( $item['status'], array( 'applying', 'reconciling' ), true ) || empty( $item['lease_expires_at'] ) || (string) $item['lease_expires_at'] > $now ) {
+			if ( ! $run || ! $item || ! $this->controlled_qa( $item ) || 'create' !== $item['approved_action'] || ! in_array( $item['status'], array( 'applying', 'reconciling' ), true ) || empty( $item['lease_expires_at'] ) || (string) $item['lease_expires_at'] > $now ) {
 				return $this->abort_string( $open, '' );
 			}
 			$token = $this->token();
@@ -888,7 +942,7 @@ final class ImportRepository {
 			$item   = $this->locked_item( $item_id );
 			$now    = current_time( 'mysql', true );
 			$states = 'creation_inspection_read_failed' === $failure ? array( 'applying', 'reconciling' ) : array( 'reconciling' );
-			if ( ! $run || ! $item || 'production' !== $item['environment'] || 'create' !== $item['approved_action'] || ! in_array( $item['status'], $states, true ) || ! hash_equals( (string) $item['execution_token'], $token ) || empty( $item['lease_expires_at'] ) || (string) $item['lease_expires_at'] <= $now ) {
+			if ( ! $run || ! $item || ! $this->controlled_qa( $item ) || 'create' !== $item['approved_action'] || ! in_array( $item['status'], $states, true ) || ! hash_equals( (string) $item['execution_token'], $token ) || empty( $item['lease_expires_at'] ) || (string) $item['lease_expires_at'] <= $now ) {
 				$this->abort( $open );
 				return;
 			}
@@ -928,7 +982,7 @@ final class ImportRepository {
 		$action = $this->action( $action_id );
 		$run    = $item ? $this->run( (int) $item['import_run_id'] ) : null;
 		$now    = current_time( 'mysql', true );
-		return $item && $action && $run && 'production' === $run['environment'] && 'running' === $run['status'] && null === $run['cancellation_requested_at'] && 'applying' === $item['status'] && hash_equals( (string) $item['execution_token'], $token ) && (string) $item['lease_expires_at'] > $now && 'running' === $action['status'] && (int) $action['import_item_id'] === $item_id && (int) $action['dispatch_generation'] === $generation && hash_equals( (string) $action['execution_token'], $execution ) && (string) $action['lease_expires_at'] > $now;
+		return $item && $action && $run && $this->controlled_source_current( $run ) && $this->controlled_qa( $item ) && 'running' === $run['status'] && null === $run['cancellation_requested_at'] && 'applying' === $item['status'] && hash_equals( (string) $item['execution_token'], $token ) && (string) $item['lease_expires_at'] > $now && 'running' === $action['status'] && (int) $action['import_item_id'] === $item_id && (int) $action['dispatch_generation'] === $generation && hash_equals( (string) $action['execution_token'], $execution ) && (string) $action['lease_expires_at'] > $now;
 	}
 
 	/** @return list<array<string,mixed>> */
@@ -948,7 +1002,7 @@ final class ImportRepository {
 
 	/**
 	 * Settle only a verified external outcome. This transaction never invokes Woo save.
-	 * Every Production worker must retain its exact item token and unexpired lease.
+	 * Every authoritative worker must retain its exact item token and unexpired lease.
 	 * Locked run/action/item rows serialize settlement with recovery takeover and cancellation.
 	 * Cancellation and action generation changes fence new writes, not owned adoption.
 	 * @param array<string,string> $projection QA desired field hashes only.
@@ -974,10 +1028,10 @@ final class ImportRepository {
 			if ( ! $approved_binding ) {
 				return $this->abort_string( $open, 'not_permitted' );
 			}
-			if ( 'production' === $run['environment'] && ( '' === $token || ! in_array( $item['status'], array( 'applying', 'reconciling' ), true ) || ! hash_equals( (string) $item['execution_token'], $token ) || empty( $item['lease_expires_at'] ) || (string) $item['lease_expires_at'] <= current_time( 'mysql', true ) ) ) {
+			if ( $this->controlled_qa( $item ) && ( '' === $token || ! in_array( $item['status'], array( 'applying', 'reconciling' ), true ) || ! hash_equals( (string) $item['execution_token'], $token ) || empty( $item['lease_expires_at'] ) || (string) $item['lease_expires_at'] <= current_time( 'mysql', true ) ) ) {
 				return $this->abort_string( $open, 'not_permitted' );
 			}
-			$preview          = 'qa' === $run['environment'];
+			$preview          = 'qa' === $run['environment'] && ! $this->controlled_qa( $item );
 			$now              = current_time( 'mysql', true );
 			$identity_table   = $wpdb->prefix . 'ideaxperts_ea_catalog_identities';
 			$wpdb->last_error = '';
@@ -990,7 +1044,7 @@ final class ImportRepository {
 				if ( ! $context || 0 !== $wc_id || array() === $projection || ! hash_equals( (string) ( $projection['approval_binding_hash'] ?? '' ), ApprovalManifest::hash( $this->approved_creation_binding( $item_id ) ) ) ) {
 					return $this->abort_string( $open, 'not_permitted' );
 				}
-			} elseif ( 'production' !== $run['environment'] || ! in_array( $run['status'], array( 'running', 'cancelling' ), true ) || 'vendor_created' !== $identity['ownership_mode'] ) {
+			} elseif ( ! $this->controlled_qa( $item ) || ! in_array( $run['status'], array( 'running', 'cancelling' ), true ) || 'vendor_created' !== $identity['ownership_mode'] ) {
 				return $this->abort_string( $open, 'not_permitted' );
 			}
 			$mapping_table = $wpdb->prefix . 'ideaxperts_ea_mappings';
@@ -1008,17 +1062,17 @@ final class ImportRepository {
 			if ( ! is_array( $reservation ) || ! empty( $wpdb->last_error ) || 'reserved' !== $reservation['reservation_status'] || 'upc' !== $reservation['identifier_type'] || '' === (string) $identity['owner_token'] || ! hash_equals( (string) $reservation['owner_token'], (string) $identity['owner_token'] ) || (string) $reservation['normalized_identifier'] !== (string) $item['normalized_upc'] || (string) $reservation['environment'] !== (string) $item['environment'] || (string) $reservation['source_scope'] !== (string) $item['source_scope'] || ( $preview ? 'preview:qa' : 'woocommerce_catalog' ) !== $reservation['namespace'] ) {
 				return $this->abort_string( $open, 'not_permitted' );
 			}
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$mapping_table} WHERE (source_scope = %s AND ea_product_id = %s AND ea_option_id = %s) OR (wc_product_id = %d AND wc_variation_id = %d) ORDER BY id ASC FOR UPDATE", 'endless-aisles:production', $item['ea_product_id'], $item['ea_option_id'], $wc_id, 0 ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$mapping_table} WHERE (source_scope = %s AND ea_product_id = %s AND ea_option_id = %s) OR (wc_product_id = %d AND wc_variation_id = %d) ORDER BY id ASC FOR UPDATE", (string) $item['source_scope'], $item['ea_product_id'], $item['ea_option_id'], $wc_id, 0 ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			if ( ! is_array( $rows ) || ! empty( $wpdb->last_error ) ) {
 				return $this->abort_string( $open, 'retry' );
 			}
-			$exact = 1 === count( $rows ) && (string) $rows[0]['source_scope'] === (string) $item['source_scope'] && 'production' === (string) $rows[0]['environment'] && (string) $rows[0]['ea_product_id'] === (string) $item['ea_product_id'] && (string) $rows[0]['ea_option_id'] === (string) $item['ea_option_id'] && (int) $rows[0]['wc_product_id'] === $wc_id && 0 === (int) $rows[0]['wc_variation_id'] && (string) $rows[0]['normalized_upc'] === (string) $item['normalized_upc'] && 'active' === $rows[0]['mapping_status'];
+			$exact = 1 === count( $rows ) && (string) $rows[0]['source_scope'] === (string) $item['source_scope'] && (string) $item['environment'] === (string) $rows[0]['environment'] && (string) $rows[0]['ea_product_id'] === (string) $item['ea_product_id'] && (string) $rows[0]['ea_option_id'] === (string) $item['ea_option_id'] && (int) $rows[0]['wc_product_id'] === $wc_id && 0 === (int) $rows[0]['wc_variation_id'] && (string) $rows[0]['normalized_upc'] === (string) $item['normalized_upc'] && 'active' === $rows[0]['mapping_status'];
 			if ( $rows && ( $preview || ! $exact ) ) {
 				$failure = 'mapping_conflict';
 			}
 			if ( ! $preview && '' === $failure && $wc_id > 0 ) {
 				try {
-					$inspection = $this->catalog_state ? $this->catalog_state->inspect( array_merge( $item, array( 'target_wc_product_id' => $wc_id ) ), (string) $item['source_scope'], 'production', true ) : null;
+					$inspection = $this->catalog_state ? $this->catalog_state->inspect( array_merge( $item, array( 'target_wc_product_id' => $wc_id ) ), (string) $item['source_scope'], (string) $item['environment'], true ) : null;
 					if ( ! $inspection ) {
 						return $this->abort_string( $open, 'inspection_retry' );
 					}
@@ -1059,7 +1113,7 @@ final class ImportRepository {
 					$mapping_table,
 					array(
 						'source_scope'    => $item['source_scope'],
-						'environment'     => 'production',
+						'environment'     => $item['environment'],
 						'wc_product_id'   => $wc_id,
 						'wc_variation_id' => 0,
 						'ea_product_id'   => $item['ea_product_id'],
@@ -2174,8 +2228,8 @@ final class ImportRepository {
 	 * @param array<string,mixed> $after Transition fields.
 	 */
 	private function release_unstarted_creation( array $item, array $after ): bool {
-		$reapproval_reasons = array( 'approval_projection_changed', 'creation_policy_invalid', 'creation_snapshot_invalid', 'creation_invalid_price', 'creation_invalid_content', 'creation_recovery_unavailable', 'pricing_policy_missing' );
-		if ( 'production' !== $item['environment'] || 'create' !== $item['approved_action'] || 'blocked' !== ( $after['status'] ?? '' ) || ! in_array( $after['failure_code'] ?? '', $reapproval_reasons, true ) || ! empty( $item['apply_started_at'] ) || ! empty( $item['reconciliation_required'] ) ) {
+		$reapproval_reasons = array( 'creation_environment_mismatch', 'creation_source_stale', 'approval_projection_changed', 'creation_policy_invalid', 'creation_snapshot_invalid', 'creation_invalid_price', 'creation_invalid_content', 'creation_recovery_unavailable', 'pricing_policy_missing' );
+		if ( ! $this->controlled_qa( $item ) || 'create' !== $item['approved_action'] || 'blocked' !== ( $after['status'] ?? '' ) || ! in_array( $after['failure_code'] ?? '', $reapproval_reasons, true ) || ! empty( $item['apply_started_at'] ) || ! empty( $item['reconciliation_required'] ) ) {
 			return true;
 		}
 		global $wpdb;
@@ -2220,7 +2274,7 @@ final class ImportRepository {
 		$ids = array();
 		foreach ( $items as $item ) {
 			$safe = in_array( (string) $item['status'], array( 'applied', 'stale_snapshot', 'manual_required', 'blocked' ), true ) || ( $cancellation_settled && 'cancelled' === $item['status'] );
-			if ( 'qa' === $item['environment'] && 'endless-aisles:qa' === $item['source_scope'] && $safe && empty( $item['reconciliation_required'] ) ) {
+			if ( ! $this->controlled_qa( $item ) && 'qa' === $item['environment'] && 'endless-aisles:qa' === $item['source_scope'] && $safe && empty( $item['reconciliation_required'] ) ) {
 				$ids[] = (int) $item['id'];
 			}
 		}
@@ -2314,7 +2368,7 @@ final class ImportRepository {
 		}
 		$reservation = null;
 		if ( '' !== (string) $item['normalized_upc'] ) {
-			$namespace   = 'production' === $item['environment'] ? 'woocommerce_catalog' : 'preview:qa';
+			$namespace   = ( 'production' === $item['environment'] || $this->controlled_qa( $item ) ) ? 'woocommerce_catalog' : 'preview:qa';
 			$reservation = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $wpdb->prefix . 'ideaxperts_ea_store_identifier_reservations WHERE catalog_identity_id = %d AND owning_import_item_id = %d FOR UPDATE', $identity_id, $item_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 			if ( ! is_array( $reservation ) || 'reserved' !== (string) $reservation['reservation_status'] || ! hash_equals( (string) $reservation['owner_token'], $token ) || $namespace !== (string) $reservation['namespace'] || 'upc' !== (string) $reservation['identifier_type'] || (string) $item['normalized_upc'] !== (string) $reservation['normalized_identifier'] || (string) $reservation['source_scope'] !== (string) $item['source_scope'] || (string) $reservation['environment'] !== (string) $item['environment'] ) {
 				return null;
@@ -2333,7 +2387,7 @@ final class ImportRepository {
 				return null;
 			}
 			$wpdb->last_error = '';
-			$mappings         = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . $wpdb->prefix . 'ideaxperts_ea_mappings WHERE source_scope = %s AND ea_product_id = %s AND ea_option_id = %s ORDER BY id ASC FOR UPDATE', 'endless-aisles:production', $item['ea_product_id'], $item['ea_option_id'] ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$mappings         = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . $wpdb->prefix . 'ideaxperts_ea_mappings WHERE source_scope = %s AND ea_product_id = %s AND ea_option_id = %s ORDER BY id ASC FOR UPDATE', (string) $item['source_scope'], $item['ea_product_id'], $item['ea_option_id'] ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 			if ( ! is_array( $mappings ) || array() !== $mappings || ! empty( $wpdb->last_error ) ) {
 				return null;
 			}

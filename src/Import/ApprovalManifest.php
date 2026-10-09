@@ -7,7 +7,9 @@ use IdeaXperts\EndlessAisles\ProductMapping\UpcNormalizer;
 defined( 'ABSPATH' ) || exit;
 
 final class ApprovalManifest {
-	public const MAX_ITEMS = 100000;
+	public const MAX_ITEMS         = 100000;
+	public const MAX_QA_CREATIONS  = 5;
+	public const MAX_QA_SOURCE_AGE = 86400;
 
 	public function __construct( private readonly ImportPolicy $policy, private readonly ?CatalogStateProviderInterface $catalog_state = null, private readonly SimpleProductProjection $projection = new SimpleProductProjection() ) {}
 
@@ -26,6 +28,13 @@ final class ApprovalManifest {
 		if ( count( $items ) > self::MAX_ITEMS ) {
 			throw new RuntimeException( 'The approval selection exceeds the safety limit.' );
 		}
+		$controlled = true === ( $matching_settings['controlled_qa_creation'] ?? false );
+		if ( $controlled && ( 'qa' !== $environment || 'endless-aisles:qa' !== ( $dry_run['source_scope'] ?? '' ) || ! self::qa_source_fresh( (string) ( $dry_run['completed_at'] ?? '' ) ) ) ) {
+			throw new RuntimeException( 'Controlled creation requires a fresh completed QA dry run.' );
+		}
+		$creation_count = 0;
+		$identities     = array();
+		$upcs           = array();
 		$manifest_items = array();
 		foreach ( $items as $item ) {
 			$item_id           = (int) ( $item['id'] ?? 0 );
@@ -51,7 +60,19 @@ final class ApprovalManifest {
 				'vendor_title'              => (string) ( $item['vendor_title'] ?? '' ),
 				'vendor_option_description' => (string) ( $item['vendor_option_description'] ?? '' ),
 			);
-			$source_scope   = 'endless-aisles:' . $environment;
+			if ( $controlled && 'create' === $decision['action'] ) {
+				if ( ++$creation_count > self::MAX_QA_CREATIONS || ( $item['environment'] ?? '' ) !== 'qa' || ( $item['source_scope'] ?? '' ) !== 'endless-aisles:qa' ) {
+					throw new RuntimeException( 'Controlled creation selection exceeds its QA safety boundary.' );
+				}
+				$key = self::hash( array( $vendor['ea_product_id'], $vendor['ea_option_id'] ) );
+				if ( isset( $identities[ $key ] ) || isset( $upcs[ $vendor['normalized_upc'] ] ) ) {
+					throw new RuntimeException( 'Duplicate creation identity or UPC in selection.' );
+				}
+				$identities[ $key ]                = true;
+				$upcs[ $vendor['normalized_upc'] ] = true;
+				$vendor['creation_mode']           = 'controlled_qa';
+			}
+			$source_scope = 'endless-aisles:' . $environment;
 			if ( ! $this->catalog_state ) {
 				throw new RuntimeException( 'Live catalog state is required for approval.' );
 			}
@@ -103,11 +124,21 @@ final class ApprovalManifest {
 			'matching_settings_hash' => $settings_hash,
 			'items'                  => $manifest_items,
 		);
+		if ( $controlled ) {
+			$manifest['creation_mode']       = 'controlled_qa';
+			$manifest['source_completed_at'] = (string) $dry_run['completed_at'];
+		}
 		return array(
 			'manifest'               => $manifest,
 			'hash'                   => self::hash( $manifest ),
 			'matching_settings_hash' => $settings_hash,
 		);
+	}
+
+	public static function qa_source_fresh( string $timestamp ): bool {
+		$stamp = 1 === preg_match( '/\A[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\z/', $timestamp ) ? strtotime( $timestamp . ' UTC' ) : false;
+		$now   = strtotime( current_time( 'mysql', true ) . ' UTC' );
+		return '' !== $timestamp && false !== $stamp && false !== $now && $stamp <= $now && $stamp >= $now - self::MAX_QA_SOURCE_AGE;
 	}
 
 	/** @param array<string,mixed> $manifest */

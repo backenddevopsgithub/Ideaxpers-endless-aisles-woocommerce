@@ -11,7 +11,7 @@ final class WooSimpleProductWriterTest extends TestCase {
 	protected function setUp(): void {
 		$GLOBALS['ea_wc_writes'] = array();
 		$GLOBALS['ea_wc_product_map'] = array();
-		$this->item = array( 'id' => 1, 'status' => 'applying', 'environment' => 'production', 'source_scope' => 'endless-aisles:production', 'operation_uuid' => str_repeat( 'a', 32 ), 'ea_product_id' => 'p', 'ea_option_id' => 'o', 'normalized_upc' => '001234567890' );
+		$this->item = array( 'id' => 1, 'status' => 'applying', 'environment' => 'qa', 'source_scope' => 'endless-aisles:qa', 'operation_uuid' => str_repeat( 'a', 32 ), 'ea_product_id' => 'p', 'ea_option_id' => 'o', 'normalized_upc' => '001234567890' );
 		$this->desired = array( 'title' => 'Title', 'description' => '<p>Safe</p>', 'regular_price' => '10', 'upc' => '001234567890', 'failure_code' => '' );
 		$GLOBALS['wpdb'] = new class {
 			public string $posts = 'wp_posts';
@@ -52,8 +52,8 @@ final class WooSimpleProductWriterTest extends TestCase {
 		return array_map( static fn( string $key ): array => array( $key ), array( WooSimpleProductWriter::OPERATION_META, '_ideaxperts_ea_create_scope', '_ideaxperts_ea_create_env', '_ideaxperts_ea_create_product', '_ideaxperts_ea_create_option', '_ideaxperts_ea_create_item', '_ideaxperts_ea_create_version', '_ideaxperts_ea_create_upc' ) );
 	}
 
-	public function test_qa_cannot_call_writer_save(): void {
-		$this->item['environment'] = 'qa';
+	public function test_production_cannot_call_writer_save(): void {
+		$this->item['environment'] = 'production';
 		$this->expectException( \RuntimeException::class );
 		try { ( new WooSimpleProductWriter() )->create_draft( $this->item, $this->desired ); }
 		finally { self::assertSame( array(), $GLOBALS['ea_wc_writes'] ); }
@@ -74,4 +74,14 @@ final class WooSimpleProductWriterTest extends TestCase {
 		$GLOBALS['wpdb']->ids = array( 601, 602 );
 		self::assertSame( array( 601, 602 ), $writer->correlated_drafts( $this->item ) );
 	}
+	public function test_recovery_checks_original_approved_fields(): void {
+		$writer = new WooSimpleProductWriter();
+		$writer->create_draft( $this->item, $this->desired );
+		$binding = array( 'title_hash' => hash( 'sha256', 'Title' ), 'description_hash' => hash( 'sha256', '<p>Safe</p>' ), 'regular_price' => '10' );
+		self::assertSame( array( 601 ), $writer->correlated_drafts( $this->item, $binding ) );
+		$GLOBALS['ea_wc_product_map'][601]->fields['regular_price'] = '11';
+		$this->expectException( \RuntimeException::class );
+		$writer->correlated_drafts( $this->item, $binding );
+	}
+
 }

@@ -16,6 +16,10 @@ final class SimpleProductCreation {
 	 */
 	public function preflight( array $item, string $token, array $action, string $execution ): bool {
 		try {
+			$context_failure = 'production' === $item['environment'] ? '' : $this->imports->creation_context_failure( $item );
+			if ( '' !== $context_failure ) {
+				throw new \RuntimeException( $context_failure );
+			}
 			$vendor = $this->imports->creation_snapshot( (int) $item['id'] );
 			if ( ! $vendor ) {
 				throw new \RuntimeException( 'creation_snapshot_invalid' );
@@ -24,14 +28,17 @@ final class SimpleProductCreation {
 			if ( ! $this->imports->creation_binding_matches( (int) $item['id'], $this->projection->binding( $vendor, (string) $item['environment'], $desired ) ) ) {
 				throw new \RuntimeException( 'approval_projection_changed' );
 			}
-			if ( 'production' === $item['environment'] && '' !== $desired['failure_code'] ) {
+			if ( ( 'production' === $item['environment'] || 'controlled_qa' === ( $vendor['creation_mode'] ?? '' ) ) && '' !== $desired['failure_code'] ) {
 				$this->imports->block_item( (int) $item['id'], $token, $desired['failure_code'] );
 				$this->imports->settle_action_for_item( (int) $action['id'], (string) $action['logical_key'], $execution );
 				return false;
 			}
+			if ( 'production' === $item['environment'] ) {
+				throw new \RuntimeException( 'creation_environment_mismatch' );
+			}
 			return true;
 		} catch ( \RuntimeException $error ) {
-			$reason = in_array( $error->getMessage(), array( 'approval_projection_changed', 'creation_policy_invalid', 'pricing_policy_missing', 'creation_snapshot_invalid', 'creation_ineligible', 'creation_invalid_upc', 'creation_title_missing', 'creation_invalid_price', 'creation_invalid_content' ), true ) ? $error->getMessage() : 'creation_projection_invalid';
+			$reason = in_array( $error->getMessage(), array( 'creation_environment_mismatch', 'creation_source_stale', 'approval_projection_changed', 'creation_policy_invalid', 'pricing_policy_missing', 'creation_snapshot_invalid', 'creation_ineligible', 'creation_invalid_upc', 'creation_title_missing', 'creation_invalid_price', 'creation_invalid_content' ), true ) ? $error->getMessage() : 'creation_projection_invalid';
 			$this->imports->block_item( (int) $item['id'], $token, $reason );
 			$this->imports->settle_action_for_item( (int) $action['id'], (string) $action['logical_key'], $execution );
 			return false;
@@ -55,12 +62,12 @@ final class SimpleProductCreation {
 				throw new \RuntimeException( 'approval_projection_changed' );
 			}
 		} catch ( \RuntimeException $error ) {
-			$reason = in_array( $error->getMessage(), array( 'approval_projection_changed', 'creation_policy_invalid', 'creation_snapshot_invalid', 'creation_ineligible', 'creation_invalid_upc', 'creation_title_missing', 'creation_invalid_price', 'creation_invalid_content' ), true ) ? $error->getMessage() : 'creation_projection_invalid';
+			$reason = in_array( $error->getMessage(), array( 'creation_environment_mismatch', 'creation_source_stale', 'approval_projection_changed', 'creation_policy_invalid', 'creation_snapshot_invalid', 'creation_ineligible', 'creation_invalid_upc', 'creation_title_missing', 'creation_invalid_price', 'creation_invalid_content' ), true ) ? $error->getMessage() : 'creation_projection_invalid';
 			$this->imports->block_item( $id, $token, $reason );
 			$this->imports->settle_action_for_item( (int) $action['id'], (string) $action['logical_key'], $execution );
 			return;
 		}
-		if ( 'qa' === $item['environment'] ) {
+		if ( 'qa' === $item['environment'] && 'controlled_qa' !== ( $vendor['creation_mode'] ?? '' ) ) {
 			$desired['approval_binding_hash'] = ApprovalManifest::hash( $binding );
 			$this->imports->finalize_simple_creation( $id, (int) $action['id'], (string) $item['operation_uuid'], 0, '', $desired, $token, $execution, (int) $action['dispatch_generation'] );
 			return;
@@ -126,7 +133,7 @@ final class SimpleProductCreation {
 			return;
 		}
 		try {
-			$ids = $this->writer->correlated_drafts( $item );
+			$ids = $this->writer->correlated_drafts( $item, $this->imports->approved_creation_binding( (int) $item['id'] ) ?? array() );
 			if ( count( $ids ) !== 1 ) {
 				$failure = $ids ? 'correlation_multiple' : 'correlation_missing';
 			} else {

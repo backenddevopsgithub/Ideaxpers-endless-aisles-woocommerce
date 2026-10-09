@@ -14,6 +14,9 @@ class WC_Product_Simple {
 	public function update_meta_data( string $key, string $value ): void {}
 	public function save(): int {}
 	public function get_type(): string {}
+	public function get_name(): string {}
+	public function get_description(): string {}
+	public function get_regular_price(): string {}
 	public function get_status(): string {}
 	public function get_global_unique_id(): string {}
 	public function get_meta( string $key, bool $single = true ): mixed {}

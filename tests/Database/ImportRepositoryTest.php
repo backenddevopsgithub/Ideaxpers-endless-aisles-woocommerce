@@ -73,6 +73,7 @@ final class ImportRepositoryTest extends TestCase {
 		$GLOBALS['ea_now']   = '2026-09-28 12:00:00'; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Existing shared test clock.
 		$this->wpdb          = new DryRunMemoryWpdb();
 		$GLOBALS['wpdb']     = $this->wpdb;
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array( 'environment' => 'qa' );
 		$this->catalog_state = new FixedCatalogStateProvider();
 		$this->imports       = new ImportRepository( $this->catalog_state );
 	}
@@ -343,8 +344,8 @@ final class ImportRepositoryTest extends TestCase {
 			),
 			'wrong environment' => array(
 				static function ( array &$item ): void {
-					$item['environment']  = 'qa';
-					$item['source_scope'] = 'endless-aisles:qa';
+					$item['environment']  = 'production';
+					$item['source_scope'] = 'endless-aisles:production';
 				},
 			),
 		);
@@ -471,7 +472,13 @@ final class ImportRepositoryTest extends TestCase {
 
 	/** @return array{run_id:int,item_id:int,identity_id:int,token:string,action_id:int,logical_key:string,dispatch_generation:int,action_execution_token:string} */
 	private function ready_item( string $product = 'p1', string $upc = '001234567890' ): array {
-		$manifest = $this->manifest( 'production', array( $this->manifest_item( 1, $product, 'o1', $upc ) ) );
+		$candidate = $this->manifest_item( 1, $product, 'o1', $upc );
+		$candidate['vendor']['creation_mode'] = 'controlled_qa';
+		$candidate['expected_vendor_hash'] = ApprovalManifest::hash( $candidate['vendor'] );
+		$manifest = $this->manifest( 'qa', array( $candidate ) );
+		$manifest['creation_mode'] = 'controlled_qa';
+		$manifest['matching_settings_hash'] = ApprovalManifest::hash( array( 'controlled_qa_creation' => true, 'allow_sku_upc_match' => 'no' ) );
+		$manifest['source_completed_at'] = $GLOBALS['ea_now'];
 		$run_id   = $this->imports->create_from_manifest( $manifest, ApprovalManifest::hash( $manifest ), 7 );
 		$this->imports->start_run( $run_id );
 		$item       = $this->imports->items( $run_id )[0];

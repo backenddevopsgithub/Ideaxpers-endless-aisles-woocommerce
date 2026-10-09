@@ -5,7 +5,7 @@ use IdeaXperts\EndlessAisles\ProductMapping\UpcNormalizer;
 
 defined( 'ABSPATH' ) || exit;
 
-/** No Production price is selected until an approved policy is supplied in code. */
+/** No creation price is selected until an approved policy is supplied in code. */
 final class SimpleProductProjection {
 	public const FIELD_POLICY = 'simple-draft-fields-v1';
 	public function __construct( private readonly ?CreationPricingPolicyInterface $pricing = null ) {}
@@ -47,6 +47,9 @@ final class SimpleProductProjection {
 	 * @return array<string,string|bool>
 	 */
 	public function binding( array $vendor, string $environment, array $desired ): array {
+		if ( 'controlled_qa' === ( $vendor['creation_mode'] ?? '' ) && 'qa' !== $environment ) {
+			throw new \RuntimeException( 'creation_environment_mismatch' );
+		}
 		$id      = $this->pricing ? $this->pricing->policy_id() : 'missing';
 		$version = $this->pricing ? $this->pricing->policy_version() : 'missing';
 		$config  = $this->pricing ? $this->pricing->configuration_hash() : hash( 'sha256', 'missing' );
@@ -76,6 +79,9 @@ final class SimpleProductProjection {
 			'regular_price'    => $desired['regular_price'],
 			'failure_code'     => $desired['failure_code'],
 		);
+		if ( 'controlled_qa' === ( $vendor['creation_mode'] ?? '' ) ) {
+			$binding['creation_mode'] = 'controlled_qa';
+		}
 		if ( $this->pricing instanceof ConfiguredCreationPricingPolicy ) {
 			$binding['pricing_configuration'] = (string) wp_json_encode( $this->pricing->configuration(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 		}

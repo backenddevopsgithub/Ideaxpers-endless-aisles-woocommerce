@@ -242,4 +242,12 @@ final class LiveCatalogStateProviderTest extends TestCase {
 			),
 		);
 	}
+	public function test_deleted_mapping_and_changed_upc_still_block_by_vendor_correlation(): void {
+		$item = array_merge( $this->item, array( 'approved_action' => 'create', 'target_wc_product_id' => 0 ) );
+		$product = new ReadOnlyProduct( 99, 'simple', 'draft', 'Original', '001234567890', '', array(), array( '_ideaxperts_ea_create_scope' => 'endless-aisles:qa', '_ideaxperts_ea_create_product' => 'p1', '_ideaxperts_ea_create_option' => 'o1' ) );
+		$GLOBALS['ea_wc_products'] = array( $product );
+		$this->expectException( CatalogInspectionConflict::class );
+		$this->provider->inspect( $item, 'endless-aisles:qa', 'qa', true );
+	}
+
 }
