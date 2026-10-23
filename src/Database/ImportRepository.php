@@ -1080,7 +1080,7 @@ final class ImportRepository {
 						$failure = 'post_save_upc_conflict';
 					}
 					$target = $inspection['target'] ?? null;
-					if ( '' === $failure && ( ! is_array( $target ) || (int) ( $target['wc_product_id'] ?? 0 ) !== $wc_id || 0 !== (int) ( $target['wc_variation_id'] ?? 0 ) || 'simple' !== ( $target['product_type'] ?? '' ) || 'draft' !== ( $target['product_status'] ?? '' ) || ! in_array( (string) $item['normalized_upc'], (array) ( $target['upcs'] ?? array() ), true ) ) ) {
+					if ( '' === $failure && ( ! is_array( $target ) || (int) ( $target['wc_product_id'] ?? 0 ) !== $wc_id || 0 !== (int) ( $target['wc_variation_id'] ?? 0 ) || 'simple' !== ( $target['product_type'] ?? '' ) || (string) ( $approved_binding['proposed_status'] ?? '' ) !== ( $target['product_status'] ?? '' ) || ! in_array( (string) $item['normalized_upc'], (array) ( $target['upcs'] ?? array() ), true ) ) ) {
 						$failure = 'post_save_target_changed';
 					}
 				} catch ( CatalogInspectionConflict ) {
@@ -1924,7 +1924,7 @@ final class ImportRepository {
 		$manual                      = ( new ImportPolicy() )->evaluate( $policy_item, true );
 		$action                      = (string) ( $item['action'] ?? '' );
 		$binding                     = $item['creation_binding'] ?? null;
-		if ( 'create' === $action && ( ! is_array( $binding ) || ( $binding['environment'] ?? '' ) !== $environment || ( $binding['vendor_hash'] ?? '' ) !== ApprovalManifest::hash( $vendor ) || ( $binding['normalized_upc'] ?? '' ) !== ( $vendor['normalized_upc'] ?? '' ) || ( $binding['field_policy'] ?? '' ) !== SimpleProductProjection::FIELD_POLICY || ! is_bool( $binding['pricing_present'] ?? null ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', (string) ( $binding['desired_hash'] ?? '' ) ) ) ) {
+		if ( 'create' === $action && ( ! is_array( $binding ) || ( $binding['environment'] ?? '' ) !== $environment || ( $binding['vendor_hash'] ?? '' ) !== ApprovalManifest::hash( $vendor ) || ( $binding['normalized_upc'] ?? '' ) !== ( $vendor['normalized_upc'] ?? '' ) || ( $binding['field_policy'] ?? '' ) !== SimpleProductProjection::FIELD_POLICY || ! in_array( $binding['proposed_status'] ?? '', array( 'draft', 'publish', 'blocked' ), true ) || ! in_array( $binding['map_decision'] ?? '', array( 'no_restriction', 'compliant', 'below_map', 'invalid', 'not_evaluated' ), true ) || ! is_bool( $binding['pricing_present'] ?? null ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', (string) ( $binding['desired_hash'] ?? '' ) ) ) ) {
 			return false;
 		}
 		$allowed = ( $automatic['eligible'] && $automatic['action'] === $action ) || ( ! $automatic['automatic'] && $manual['eligible'] && $manual['action'] === $action );

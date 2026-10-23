@@ -44,6 +44,6 @@ final class SimpleProductProjectionTest extends TestCase {
 
 	public function test_no_weight_or_other_future_fields_are_inferred_from_vendor_data(): void {
 		$vendor = array_merge( $this->vendor(), array( 'shipping_weight_lbs' => 'NaN', 'sale_price' => '1', 'image_url' => 'bad', 'dimensions' => array( 1, 2, 3 ) ) );
-		self::assertSame( array( 'title', 'description', 'upc', 'regular_price', 'failure_code' ), array_keys( ( new SimpleProductProjection() )->build( $vendor ) ) );
+		self::assertSame( array( 'title', 'description', 'upc', 'regular_price', 'failure_code', 'map_decision', 'status', 'review_flags' ), array_keys( ( new SimpleProductProjection() )->build( $vendor ) ) );
 	}
 }

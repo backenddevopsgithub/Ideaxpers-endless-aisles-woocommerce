@@ -9,6 +9,9 @@ final class ConfiguredCreationPricingPolicyTest extends TestCase {
 	public static function config(): array {
 		return array( 'approval_reference' => 'test-only-merchant-decision', 'rule' => 'direct_source', 'source_field' => 'retail_price', 'currency' => 'USD', 'decimal_places' => 2, 'max_age_seconds' => 300, 'map_rule' => 'ignore_map', 'zero_map_rule' => 'block' );
 	}
+	public static function staging_config(): array {
+		return array( 'approval_reference' => 'staging-retail-direct-v1', 'rule' => 'direct_source', 'source_field' => 'retail_price', 'currency' => 'USD', 'decimal_places' => 2, 'max_age_seconds' => 86400, 'map_rule' => 'draft_below_map', 'zero_map_rule' => 'no_restriction' );
+	}
 	protected function setUp(): void {
 		$GLOBALS['ea_now'] = '2026-10-02 12:00:00';
 		$GLOBALS['ea_test_options'] = array( 'woocommerce_currency' => 'USD', 'woocommerce_price_num_decimals' => 2 );
@@ -17,8 +20,8 @@ final class ConfiguredCreationPricingPolicyTest extends TestCase {
 		$config = self::config();
 		$policy = new ConfiguredCreationPricingPolicy( $config );
 		$vendor = array( 'retail_price' => '000.50', 'source_observed_at' => $GLOBALS['ea_now'] );
-		self::assertSame( 'ea-approved-direct-source', $policy->policy_id() );
-		self::assertSame( '1', $policy->policy_version() );
+		self::assertSame( 'ea-approved-creation-pricing', $policy->policy_id() );
+		self::assertSame( '2', $policy->policy_version() );
 		self::assertSame( ApprovalManifest::hash( $config ), $policy->configuration_hash() );
 		self::assertSame( $policy->configuration_hash(), ( new ConfiguredCreationPricingPolicy( array_reverse( $config, true ) ) )->configuration_hash() );
 		self::assertSame( '0.50', $policy->regular_price( $vendor ) );
@@ -66,7 +69,7 @@ final class ConfiguredCreationPricingPolicyTest extends TestCase {
 		self::assertSame( '' === $failure ? '20.00' : null, $policy->regular_price( $vendor ) );
 	}
 	public static function mapRules(): array {
-		return array( array( 'block_below_map', 'no_restriction', '25', 'pricing_below_map' ), array( 'block_below_map', 'no_restriction', '20', '' ), array( 'block_below_map', 'no_restriction', '0.00', '' ), array( 'block_below_map', 'block', '0', 'pricing_zero_map_review' ), array( 'block_below_map', 'block', '', 'pricing_map_invalid' ), array( 'ignore_map', 'block', '25', '' ), array( '', 'block', '0', 'pricing_configuration_invalid' ), array( 'block_below_map', '', '0', 'pricing_configuration_invalid' ) );
+		return array( array( 'draft_below_map', 'no_restriction', '25', '' ), array( 'draft_below_map', 'no_restriction', '20', '' ), array( 'draft_below_map', 'no_restriction', '0.00', '' ), array( 'draft_below_map', 'block', '0', 'pricing_zero_map_review' ), array( 'draft_below_map', 'block', '', 'pricing_map_invalid' ), array( 'ignore_map', 'block', '25', '' ), array( '', 'block', '0', 'pricing_configuration_invalid' ), array( 'draft_below_map', '', '0', 'pricing_configuration_invalid' ) );
 	}
 
 	public function test_preview_configuration_excludes_unrecognized_secret_fields(): void {
@@ -75,6 +78,36 @@ final class ConfiguredCreationPricingPolicyTest extends TestCase {
 		$policy = new ConfiguredCreationPricingPolicy( $config );
 		self::assertArrayNotHasKey( 'api_token', $policy->configuration() );
 		self::assertStringNotContainsString( 'secret-fixture-must-not-appear', wp_json_encode( $policy->configuration() ) );
+	}
+
+	/** @dataProvider stagingMapExamples */
+	public function test_staging_map_decision_never_uplifts_retail( string $retail, string $map, string $decision ): void {
+		$policy = new ConfiguredCreationPricingPolicy( self::staging_config() );
+		$vendor = array( 'retail_price' => $retail, 'map_price' => $map, 'source_observed_at' => $GLOBALS['ea_now'] );
+		self::assertSame( '', $policy->failure_code( $vendor ) );
+		self::assertSame( $retail, $policy->regular_price( $vendor ) );
+		self::assertSame( $decision, $policy->map_decision( $vendor ) );
+	}
+
+	public static function stagingMapExamples(): array {
+		return array( array( '29.99', '0', 'no_restriction' ), array( '29.99', '24.99', 'compliant' ), array( '19.99', '24.99', 'below_map' ) );
+	}
+
+	/** @dataProvider explicitMarkupRules */
+	public function test_future_markup_rules_require_and_bind_explicit_values( string $rule, string $markup, string $expected ): void {
+		$config = self::config();
+		$config['rule'] = $rule;
+		$config['markup_value'] = $markup;
+		$policy = new ConfiguredCreationPricingPolicy( $config );
+		$vendor = array( 'retail_price' => '20.00', 'source_observed_at' => $GLOBALS['ea_now'] );
+		self::assertSame( $expected, $policy->regular_price( $vendor ) );
+		self::assertArrayHasKey( 'markup_value', $policy->configuration() );
+		unset( $config['markup_value'] );
+		self::assertSame( 'pricing_configuration_invalid', ( new ConfiguredCreationPricingPolicy( $config ) )->failure_code( $vendor ) );
+	}
+
+	public static function explicitMarkupRules(): array {
+		return array( array( 'percentage_markup', '10', '22.00' ), array( 'fixed_markup', '2.50', '22.50' ) );
 	}
 
 }

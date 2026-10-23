@@ -5,6 +5,9 @@ use IdeaXperts\EndlessAisles\Catalog\PriceInspector;
 use PHPUnit\Framework\TestCase;
 
 final class PriceInspectorTest extends TestCase {
+	public function test_zero_map_is_explicitly_no_restriction(): void {
+		self::assertSame( array(), PriceInspector::warnings( array( 'price' => '29.99', 'wholesale' => '10.00', 'minimum_advertised_price' => '0' ) ) );
+	}
 	public function test_documented_price_anomalies_are_reported(): void {
 		$warnings = PriceInspector::warnings(
 			array(

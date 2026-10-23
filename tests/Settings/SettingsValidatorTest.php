@@ -97,4 +97,22 @@ final class SettingsValidatorTest extends TestCase {
 		self::assertSame( array( '_upc', 'gtin.value' ), $result['upc_meta_keys'] );
 		self::assertSame( 'yes', $result['allow_sku_upc_match'] );
 	}
+
+	public function test_controlled_pricing_requires_explicit_enable_and_persists_approved_defaults(): void {
+		$validator = new SettingsValidator();
+		self::assertSame( array(), $validator->validate( array() )['creation_pricing'] );
+		$result = $validator->validate( array( 'creation_pricing' => array( 'enabled' => '1', 'approval_reference' => 'staging approval', 'rule' => 'direct_source', 'source_field' => 'retail_price', 'currency' => 'usd', 'decimal_places' => '2', 'max_age_seconds' => '86400' ) ) )['creation_pricing'];
+		self::assertSame( 'direct_source', $result['rule'] );
+		self::assertSame( 'retail_price', $result['source_field'] );
+		self::assertSame( 'USD', $result['currency'] );
+		self::assertSame( 2, $result['decimal_places'] );
+		self::assertSame( 86400, $result['max_age_seconds'] );
+		self::assertSame( 'draft_below_map', $result['map_rule'] );
+		self::assertSame( 'no_restriction', $result['zero_map_rule'] );
+		$manipulated = $validator->validate( array( 'creation_pricing' => array( 'enabled' => '1', 'rule' => 'direct_source', 'source_field' => 'wholesale_price', 'currency' => 'EUR', 'decimal_places' => '4', 'max_age_seconds' => '1' ) ) )['creation_pricing'];
+		self::assertSame( 'retail_price', $manipulated['source_field'] );
+		self::assertSame( 'USD', $manipulated['currency'] );
+		self::assertSame( 2, $manipulated['decimal_places'] );
+		self::assertSame( 86400, $manipulated['max_age_seconds'] );
+	}
 }

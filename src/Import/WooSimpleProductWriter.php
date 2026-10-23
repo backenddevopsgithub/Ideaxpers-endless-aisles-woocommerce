@@ -3,7 +3,7 @@ namespace IdeaXperts\EndlessAisles\Import;
 
 defined( 'ABSPATH' ) || exit;
 
-/** The sole WooCommerce writer, restricted to a first simple Draft save. */
+/** The sole WooCommerce writer, restricted to one policy-approved simple-product save. */
 final class WooSimpleProductWriter implements SimpleProductWriterInterface {
 	public const OPERATION_META = '_ideaxperts_ea_create_operation';
 
@@ -36,7 +36,10 @@ final class WooSimpleProductWriter implements SimpleProductWriterInterface {
 		if ( ! method_exists( $product, 'set_global_unique_id' ) ) {
 			throw new \RuntimeException( 'creation_upc_api_missing' );
 		}
-		$product->set_status( 'draft' );
+		if ( ! in_array( $projection['status'] ?? '', array( 'draft', 'publish' ), true ) ) {
+			throw new \RuntimeException( 'creation_status_invalid' );
+		}
+		$product->set_status( $projection['status'] );
 		$product->set_name( $projection['title'] );
 		$product->set_description( $projection['description'] );
 		$product->set_regular_price( $projection['regular_price'] );
@@ -66,7 +69,7 @@ final class WooSimpleProductWriter implements SimpleProductWriterInterface {
 		foreach ( $ids as $id ) {
 			clean_post_cache( (int) $id );
 			$product = wc_get_product( (int) $id );
-			if ( ! $product instanceof \WC_Product_Simple || 'simple' !== $product->get_type() || 'draft' !== $product->get_status() || ! method_exists( $product, 'get_global_unique_id' ) || (string) $product->get_global_unique_id() !== (string) $item['normalized_upc'] ) {
+			if ( ! $product instanceof \WC_Product_Simple || 'simple' !== $product->get_type() || ( $approved_binding && (string) ( $approved_binding['proposed_status'] ?? '' ) !== $product->get_status() ) || ! method_exists( $product, 'get_global_unique_id' ) || (string) $product->get_global_unique_id() !== (string) $item['normalized_upc'] ) {
 				throw new \RuntimeException( 'correlation_object_invalid' );
 			}
 			if ( $approved_binding && ( ! hash_equals( (string) $approved_binding['title_hash'], hash( 'sha256', (string) $product->get_name() ) ) || ! hash_equals( (string) $approved_binding['description_hash'], hash( 'sha256', (string) $product->get_description() ) ) || (string) $approved_binding['regular_price'] !== (string) $product->get_regular_price() ) ) {

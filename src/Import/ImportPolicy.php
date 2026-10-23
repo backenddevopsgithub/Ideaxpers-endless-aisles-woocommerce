@@ -33,7 +33,7 @@ final class ImportPolicy {
 			return $this->result( true, true, 'validate', 'already_linked' );
 		}
 		if ( 'new_product_candidate' === $classification ) {
-			if ( array() !== $flags || ( isset( $item['purchasable'] ) && 1 !== (int) $item['purchasable'] ) || ! empty( $item['discontinued'] ) ) {
+			if ( array_diff( $flags, array( 'retail_below_map' ) ) || ( isset( $item['purchasable'] ) && 1 !== (int) $item['purchasable'] ) || ! empty( $item['discontinued'] ) ) {
 				return $this->result( false, false, 'blocked', 'explicit_review_required' );
 			}
 			return $this->result( true, true, 'create', 'safe_new_candidate' );

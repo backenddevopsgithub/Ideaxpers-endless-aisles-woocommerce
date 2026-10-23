@@ -86,8 +86,8 @@ final class Plugin {
 		$this->container->set( ImportPolicy::class, static fn() => new ImportPolicy() );
 		$this->container->set(
 			SimpleProductProjection::class,
-			static function () {
-				$config = defined( 'IDEAXPERTS_EA_CREATION_PRICING' ) ? constant( 'IDEAXPERTS_EA_CREATION_PRICING' ) : null;
+			function () {
+				$config = $this->container->get( SettingsRepository::class )->creation_pricing_configuration();
 				return new SimpleProductProjection( is_array( $config ) ? new ConfiguredCreationPricingPolicy( $config ) : null );
 			}
 		);

@@ -23,6 +23,7 @@ final class SettingsRepository {
 			'use_global_unique_id' => 'yes',
 			'upc_meta_keys'        => array(),
 			'allow_sku_upc_match'  => 'no',
+			'creation_pricing'     => array(),
 		);
 		$value    = get_option( self::OPTION, array() );
 		$settings = wp_parse_args( is_array( $value ) ? $value : array(), $defaults );
@@ -35,6 +36,12 @@ final class SettingsRepository {
 	public function get( string $key, mixed $fallback = null ): mixed {
 		$settings = $this->all();
 		return $settings[ $key ] ?? $fallback;
+	}
+
+	/** @return array<string,mixed>|null */
+	public function creation_pricing_configuration(): ?array {
+		$config = $this->get( 'creation_pricing', array() );
+		return is_array( $config ) && ! empty( $config['enabled'] ) ? array_diff_key( $config, array( 'enabled' => true ) ) : null;
 	}
 
 	/** @param array<string,mixed> $input */

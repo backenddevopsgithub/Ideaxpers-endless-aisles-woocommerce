@@ -37,7 +37,7 @@ final class PriceInspector {
 			return null;
 		}
 		$value = (float) $option[ $field ];
-		if ( $value <= 0 ) {
+		if ( $value <= 0 && ! ( 'minimum_advertised_price' === $field && 0.0 === $value ) ) {
 			$warnings[] = 'non_positive_' . $field;
 		}
 		return $value;

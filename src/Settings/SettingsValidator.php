@@ -31,7 +31,37 @@ final class SettingsValidator {
 			'use_global_unique_id' => ! empty( $input['use_global_unique_id'] ) ? 'yes' : 'no',
 			'upc_meta_keys'        => $metadata_keys,
 			'allow_sku_upc_match'  => ! empty( $input['allow_sku_upc_match'] ) ? 'yes' : 'no',
+			'creation_pricing'     => $this->creation_pricing( $input['creation_pricing'] ?? array() ),
 		);
+	}
+
+	/** @return array<string,mixed> */
+	private function creation_pricing( mixed $input ): array {
+		if ( ! is_array( $input ) || empty( $input['enabled'] ) ) {
+			return array();
+		}
+		$rule   = sanitize_key( (string) ( $input['rule'] ?? 'direct_source' ) );
+		$config = array(
+			'enabled'            => true,
+			'approval_reference' => substr( sanitize_text_field( (string) ( $input['approval_reference'] ?? '' ) ), 0, 128 ),
+			'rule'               => in_array( $rule, array( 'direct_source', 'percentage_markup', 'fixed_markup' ), true ) ? $rule : '',
+			'source_field'       => 'retail_price',
+			'currency'           => 'USD',
+			'decimal_places'     => 2,
+			'max_age_seconds'    => 86400,
+			'map_rule'           => 'draft_below_map',
+			'zero_map_rule'      => 'no_restriction',
+		);
+		if ( in_array( $rule, array( 'percentage_markup', 'fixed_markup' ), true ) ) {
+			$config['markup_value'] = sanitize_text_field( (string) ( $input['markup_value'] ?? '' ) );
+		}
+		foreach ( array( 'minimum_price', 'maximum_price' ) as $bound ) {
+			$value = trim( sanitize_text_field( (string) ( $input[ $bound ] ?? '' ) ) );
+			if ( '' !== $value ) {
+				$config[ $bound ] = $value;
+			}
+		}
+		return $config;
 	}
 
 	/** @return list<string> */

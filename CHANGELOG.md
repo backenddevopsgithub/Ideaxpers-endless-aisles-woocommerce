@@ -1,5 +1,7 @@
 # Changelog
 
+- Added persisted controlled-QA pricing configuration, direct Retail pricing with 24-hour freshness, explicit zero-MAP handling, MAP-aware Publish/Draft decisions, status-bound approval/final-permit/recovery checks, and staging review details. Production creation remains disabled.
+
 ## Unreleased
 
 - Added Milestone 3C's simple Draft writer, committed creation intent, exact operation correlation, read-only crash recovery and transactional `vendor_created` mapping finalization.

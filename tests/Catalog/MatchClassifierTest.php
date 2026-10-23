@@ -87,6 +87,12 @@ final class MatchClassifierTest extends TestCase {
 		self::assertContains( 'suspicious_price', $price['review_flags'] );
 	}
 
+	public function test_retail_below_map_retains_a_distinct_review_condition(): void {
+		$result = $this->classifier->classify( $this->option( array( 'price' => 19.99, 'minimum_advertised_price' => 24.99 ) ), array(), array(), array(), false, false );
+		self::assertSame( 'new_product_candidate', $result['classification'] );
+		self::assertSame( array( 'retail_below_map' ), $result['review_flags'] );
+	}
+
 	public function test_price_warnings_never_override_an_exact_upc_match(): void {
 		$result = $this->classifier->classify(
 			$this->option( array( 'price' => 2, 'wholesale' => 3 ) ),

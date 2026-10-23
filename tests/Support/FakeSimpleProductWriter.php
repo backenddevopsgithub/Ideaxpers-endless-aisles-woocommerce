@@ -24,9 +24,9 @@ final class FakeSimpleProductWriter implements SimpleProductWriterInterface {
 		if ( is_callable( $this->before_persistence ) ) {
 			( $this->before_persistence )();
 		}
-		$this->objects[501] = array( 'item' => $item, 'projection' => $projection, 'type' => 'simple', 'status' => 'draft' );
+		$this->objects[501] = array( 'item' => $item, 'projection' => $projection, 'type' => 'simple', 'status' => $projection['status'] );
 		$this->state->upc_owners = array( '501:0' );
-		$this->state->target = array( 'wc_product_id' => 501, 'wc_variation_id' => 0, 'product_type' => 'simple', 'product_status' => 'draft', 'upcs' => array( (string) $item['normalized_upc'] ) );
+		$this->state->target = array( 'wc_product_id' => 501, 'wc_variation_id' => 0, 'product_type' => 'simple', 'product_status' => $projection['status'], 'upcs' => array( (string) $item['normalized_upc'] ) );
 		if ( is_callable( $this->after_persistence ) ) {
 			( $this->after_persistence )();
 		}
@@ -50,7 +50,7 @@ final class FakeSimpleProductWriter implements SimpleProductWriterInterface {
 					throw new \RuntimeException( 'Wrong correlation' );
 				}
 			}
-			if ( 'simple' !== $object['type'] || 'draft' !== $object['status'] ) {
+			if ( 'simple' !== $object['type'] || ( $approved_binding && (string) ( $approved_binding['proposed_status'] ?? '' ) !== $object['status'] ) ) {
 				throw new \RuntimeException( 'Wrong object' );
 			}
 			if ( $approved_binding && ( $approved_binding['regular_price'] !== $object['projection']['regular_price'] || $approved_binding['title_hash'] !== hash( 'sha256', $object['projection']['title'] ) || $approved_binding['description_hash'] !== hash( 'sha256', $object['projection']['description'] ) ) ) {

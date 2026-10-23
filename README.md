@@ -1,6 +1,6 @@
 # IdeaXperts Endless Aisles for WooCommerce
 
-Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Controlled QA creation now reuses the guarded simple Draft creation and recovery path for 1 to 5 explicitly selected candidates. An approved server-side pricing configuration is mandatory; the repository enables no provisional merchant policy. Production product creation is disabled. Legacy QA preview approvals remain read-only. Inventory synchronization and order submission remain disabled. See [controlled QA creation](docs/CONTROLLED-QA-CREATION.md).
+Production-oriented integration for comparing a WooCommerce catalog with Endless Aisles. Controlled QA creation reuses the guarded one-save creation and recovery path for 1 to 5 explicitly selected candidates. A saved, explicitly enabled pricing configuration is mandatory. Clean eligible items are proposed as Publish; Retail below positive MAP retains Retail and is proposed as Draft; blocking conditions are not created. Production product creation remains disabled. Legacy QA preview approvals remain read-only. Inventory synchronization and order submission remain disabled. See [controlled QA creation](docs/CONTROLLED-QA-CREATION.md).
 
 ## Requirements
 
@@ -33,7 +33,7 @@ QA can observe an exact Production mapping as read-only context and successfully
 
 QA identity and UPC reservations protect active work, including retries and crash recovery. Settled previews release their reservations atomically; a later independent QA approval can reuse them. Active contention waits for a retry. Cancellation releases reservations only after authoritative settlement; ambiguous applying/reconciling/manual-recovery work retains them. Production ownership remains durable. All import audit JSON uses one deterministic allowlist and a 4,000-byte budget, with compact target references and canonical hashes instead of full mapping rows.
 
-The existing product remains merchant-owned: titles, descriptions, identifiers, prices, stock, status, taxonomy, shipping data, dimensions, and media are untouched. New simple Draft creation has its own committed-intent/reconciliation workflow; see [Milestone 3C](docs/MILESTONE-3C.md). Variation creation, images, inventory synchronization, shipping, and order submission remain disabled.
+The existing product remains merchant-owned: titles, descriptions, identifiers, prices, stock, status, taxonomy, shipping data, dimensions, and media are untouched. New simple controlled-QA creation has its own committed-intent/reconciliation workflow and binds the exact approved Publish/Draft status; see [Milestone 3C](docs/MILESTONE-3C.md). Variation creation, images, inventory synchronization, shipping, and order submission remain disabled.
 
 ## Development
 

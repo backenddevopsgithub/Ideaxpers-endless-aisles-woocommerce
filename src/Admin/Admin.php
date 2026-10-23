@@ -169,7 +169,22 @@ final class Admin {
 		}
 		$this->row( __( 'Logging level', 'ideaxperts-endless-aisles' ), '<select name="settings[log_level]">' . $options . '</select>' );
 		$this->row( __( 'Alert email', 'ideaxperts-endless-aisles' ), '<input type="email" class="regular-text" name="settings[alert_email]" value="' . esc_attr( (string) $settings['alert_email'] ) . '">' );
-		$this->row( __( 'New product status', 'ideaxperts-endless-aisles' ), '<input type="hidden" name="settings[import_status]" value="draft"><strong>' . esc_html__( 'Draft', 'ideaxperts-endless-aisles' ) . '</strong>' );
+		$pricing = is_array( $settings['creation_pricing'] ?? null ) ? $settings['creation_pricing'] : array();
+		$this->row( __( 'Controlled QA pricing', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[creation_pricing][enabled]" value="1" ' . checked( true, ! empty( $pricing['enabled'] ), false ) . '> ' . esc_html__( 'Enable the explicitly saved staging pricing policy', 'ideaxperts-endless-aisles' ) . '</label><p class="description">Saving is required; there is no implicit pricing fallback.</p>' );
+		$rules = '';
+		foreach ( array(
+			'direct_source'     => 'Direct source',
+			'percentage_markup' => 'Percentage markup',
+			'fixed_markup'      => 'Fixed markup',
+		) as $value => $label ) {
+			$rules .= '<option value="' . esc_attr( $value ) . '" ' . selected( $value, $pricing['rule'] ?? 'direct_source', false ) . '>' . esc_html( $label ) . '</option>';
+		}
+		$this->row( __( 'Pricing method', 'ideaxperts-endless-aisles' ), '<select name="settings[creation_pricing][rule]">' . $rules . '</select><p class="description">Direct source is the approved staging method. Markup methods require an explicit value.</p>' );
+		$this->row( __( 'Pricing approval reference', 'ideaxperts-endless-aisles' ), '<input type="text" class="regular-text" maxlength="128" name="settings[creation_pricing][approval_reference]" value="' . esc_attr( (string) ( $pricing['approval_reference'] ?? '' ) ) . '">' );
+		$this->row( __( 'Pricing source', 'ideaxperts-endless-aisles' ), '<strong>Retail price</strong><input type="hidden" name="settings[creation_pricing][source_field]" value="retail_price">' );
+		$this->row( __( 'Pricing currency / precision / freshness', 'ideaxperts-endless-aisles' ), '<strong>USD / 2 decimals / 86400 seconds</strong><input type="hidden" name="settings[creation_pricing][currency]" value="USD"><input type="hidden" name="settings[creation_pricing][decimal_places]" value="2"><input type="hidden" name="settings[creation_pricing][max_age_seconds]" value="86400">' );
+		$this->row( __( 'Optional markup / bounds', 'ideaxperts-endless-aisles' ), 'Markup <input name="settings[creation_pricing][markup_value]" value="' . esc_attr( (string) ( $pricing['markup_value'] ?? '' ) ) . '"> Minimum <input name="settings[creation_pricing][minimum_price]" value="' . esc_attr( (string) ( $pricing['minimum_price'] ?? '' ) ) . '"> Maximum <input name="settings[creation_pricing][maximum_price]" value="' . esc_attr( (string) ( $pricing['maximum_price'] ?? '' ) ) . '"><p class="description">Leave bounds blank for the approved staging policy. MAP 0 means no restriction; Retail below positive MAP remains Retail and creates Draft.</p>' );
+		$this->row( __( 'Controlled product status', 'ideaxperts-endless-aisles' ), '<strong>' . esc_html__( 'Policy-derived: Publish when clean; Draft when Retail is below positive MAP; blocked conditions are not created.', 'ideaxperts-endless-aisles' ) . '</strong>' );
 		$this->row( __( 'Use global unique ID for UPC matching', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[use_global_unique_id]" value="1" ' . checked( 'yes', $settings['use_global_unique_id'], false ) . '> ' . esc_html__( 'Read WooCommerce global unique IDs', 'ideaxperts-endless-aisles' ) . '</label>' );
 		$this->row( __( 'Additional UPC metadata keys', 'ideaxperts-endless-aisles' ), '<input type="text" class="regular-text" name="settings[upc_meta_keys]" value="' . esc_attr( implode( ',', (array) $settings['upc_meta_keys'] ) ) . '"><p class="description">' . esc_html__( 'Comma-separated metadata keys. Only letters, numbers, underscore, dot, colon, and hyphen are accepted.', 'ideaxperts-endless-aisles' ) . '</p>' );
 		$this->row( __( 'Allow exact SKU-to-UPC matching', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[allow_sku_upc_match]" value="1" ' . checked( 'yes', $settings['allow_sku_upc_match'], false ) . '> ' . esc_html__( 'Disabled by default; compares exact normalized values only', 'ideaxperts-endless-aisles' ) . '</label>' );

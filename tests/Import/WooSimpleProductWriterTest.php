@@ -12,7 +12,7 @@ final class WooSimpleProductWriterTest extends TestCase {
 		$GLOBALS['ea_wc_writes'] = array();
 		$GLOBALS['ea_wc_product_map'] = array();
 		$this->item = array( 'id' => 1, 'status' => 'applying', 'environment' => 'qa', 'source_scope' => 'endless-aisles:qa', 'operation_uuid' => str_repeat( 'a', 32 ), 'ea_product_id' => 'p', 'ea_option_id' => 'o', 'normalized_upc' => '001234567890' );
-		$this->desired = array( 'title' => 'Title', 'description' => '<p>Safe</p>', 'regular_price' => '10', 'upc' => '001234567890', 'failure_code' => '' );
+		$this->desired = array( 'title' => 'Title', 'description' => '<p>Safe</p>', 'regular_price' => '10', 'upc' => '001234567890', 'failure_code' => '', 'status' => 'publish' );
 		$GLOBALS['wpdb'] = new class {
 			public string $posts = 'wp_posts';
 			public string $postmeta = 'wp_postmeta';
@@ -30,7 +30,7 @@ final class WooSimpleProductWriterTest extends TestCase {
 		$writer = new WooSimpleProductWriter();
 		self::assertSame( 601, $writer->create_draft( $this->item, $this->desired ) );
 		$product = $GLOBALS['ea_wc_writes'][0];
-		self::assertSame( array( 'status' => 'draft', 'name' => 'Title', 'description' => '<p>Safe</p>', 'regular_price' => '10', 'global_unique_id' => '001234567890' ), $product->fields );
+		self::assertSame( array( 'status' => 'publish', 'name' => 'Title', 'description' => '<p>Safe</p>', 'regular_price' => '10', 'global_unique_id' => '001234567890' ), $product->fields );
 		self::assertCount( 8, $product->meta );
 		self::assertSame( $this->item['operation_uuid'], $product->meta[ WooSimpleProductWriter::OPERATION_META ] );
 		self::assertSame( array( 601 ), $writer->correlated_drafts( $this->item ) );
@@ -77,7 +77,7 @@ final class WooSimpleProductWriterTest extends TestCase {
 	public function test_recovery_checks_original_approved_fields(): void {
 		$writer = new WooSimpleProductWriter();
 		$writer->create_draft( $this->item, $this->desired );
-		$binding = array( 'title_hash' => hash( 'sha256', 'Title' ), 'description_hash' => hash( 'sha256', '<p>Safe</p>' ), 'regular_price' => '10' );
+		$binding = array( 'title_hash' => hash( 'sha256', 'Title' ), 'description_hash' => hash( 'sha256', '<p>Safe</p>' ), 'regular_price' => '10', 'proposed_status' => 'publish' );
 		self::assertSame( array( 601 ), $writer->correlated_drafts( $this->item, $binding ) );
 		$GLOBALS['ea_wc_product_map'][601]->fields['regular_price'] = '11';
 		$this->expectException( \RuntimeException::class );

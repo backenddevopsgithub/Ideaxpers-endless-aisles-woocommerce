@@ -133,7 +133,7 @@ final class CatalogImportAdmin {
 		if ( ! current_user_can( self::CAPABILITY ) ) {
 			return;
 		}
-		echo '<h2>Controlled QA product creation</h2><p>Select 1 to 5 explicitly priced candidates from a completed QA dry run, review their exact fields, then confirm to queue Draft creation.</p>';
+		echo '<h2>Controlled QA product creation</h2><p>Select 1 to 5 explicitly priced candidates from a completed QA dry run, review their exact fields and policy-derived status, then confirm.</p>';
 		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '"><input type="hidden" name="page" value="ideaxperts-endless-aisles"><input type="hidden" name="tab" value="catalog"><label>Completed QA dry run ID <input type="number" min="1" name="creation_dry_run_id"></label>';
 		submit_button( 'Open QA candidates', 'secondary', 'submit', false );
 		echo '</form>';
@@ -144,7 +144,7 @@ final class CatalogImportAdmin {
 		$run          = $selected_run > 0 ? $this->dry_runs->run( $selected_run ) : $wpdb->get_row( "SELECT * FROM {$table} WHERE environment = 'qa' AND status = 'completed' ORDER BY id DESC LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( is_array( $run ) && 'qa' === $run['environment'] && 'completed' === $run['status'] ) {
 			echo '<h2>' . esc_html__( 'Catalog import approval', 'ideaxperts-endless-aisles' ) . '</h2>';
-			echo '<p>QA � Controlled creation saves real Draft products after an approved pricing policy and explicit confirmation.</p>';
+			echo '<p>QA — Controlled creation saves clean products as Publish and Retail-below-MAP products as Draft after explicit confirmation.</p>';
 			$this->render_preview_notice( (string) $run['environment'] );
 			echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="ideaxperts_ea_prepare_import"><input type="hidden" name="dry_run_id" value="' . esc_attr( (string) $run['id'] ) . '">';
 			wp_nonce_field( 'ideaxperts_ea_prepare_import' );
@@ -161,13 +161,14 @@ final class CatalogImportAdmin {
 					$is_create             = $is_create && $preview['eligible'];
 					$decision['automatic'] = $is_create;
 					$decision['reason']    = $preview['reason'];
-					$target                = 'New simple Draft: ' . (string) $item['vendor_title'] . ' / Description: ' . substr( wp_strip_all_tags( (string) $item['vendor_option_description'] ), 0, 240 ) . ' / UPC ' . (string) $item['normalized_upc'] . ' / Price: ' . (string) ( $binding['regular_price'] ?? 'unresolved' ) . ' / Policy: ' . (string) ( $binding['pricing_id'] ?? 'unavailable' ) . ':' . (string) ( $binding['pricing_version'] ?? '' ) . ' / Approval reference: ' . (string) ( json_decode( (string) ( $binding['pricing_configuration'] ?? '{}' ), true )['approval_reference'] ?? 'unavailable' ) . ' / Vendor retail / wholesale / MAP: ' . (string) $item['retail_price'] . ' / ' . (string) $item['wholesale_price'] . ' / ' . (string) $item['map_price'] . ' / Purchasable: ' . (int) $item['purchasable'] . ' / Discontinued: ' . (int) $item['discontinued'] . ' / Classification: ' . (string) $item['classification'] . ' / Review flags: ' . (string) $item['review_flags'] . ' / Environment: ' . (string) $item['environment'] . ' / Observed UTC: ' . (string) $item['created_at'] . ' / Source completed UTC: ' . (string) $run['completed_at'] . ' / Mapping: ' . $preview['mapping_state'] . ' / Preview: ' . ( $preview['eligible'] ? 'eligible; explicit approval required' : $preview['reason'] );
+					$config                = json_decode( (string) ( $binding['pricing_configuration'] ?? '{}' ), true );
+					$target                = 'New simple ' . ucfirst( (string) ( $binding['proposed_status'] ?? 'blocked' ) ) . ': ' . (string) $item['vendor_title'] . ' / Description: ' . substr( wp_strip_all_tags( (string) $item['vendor_option_description'] ), 0, 240 ) . ' / EA product / option: ' . (string) $item['ea_product_id'] . ' / ' . (string) $item['ea_option_id'] . ' / UPC ' . (string) $item['normalized_upc'] . ' / Resolved selling price: ' . (string) ( $binding['regular_price'] ?? 'unresolved' ) . ' / Method / source / currency / freshness: ' . (string) ( $config['rule'] ?? 'unavailable' ) . ' / ' . (string) ( $config['source_field'] ?? 'unavailable' ) . ' / ' . (string) ( $config['currency'] ?? 'unavailable' ) . ' / ' . (string) ( $config['max_age_seconds'] ?? 'unavailable' ) . 's / MAP decision: ' . (string) ( $binding['map_decision'] ?? 'unavailable' ) . ' / Policy: ' . (string) ( $binding['pricing_id'] ?? 'unavailable' ) . ':' . (string) ( $binding['pricing_version'] ?? '' ) . ' / Approval reference: ' . (string) ( $config['approval_reference'] ?? 'unavailable' ) . ' / Vendor Retail / Wholesale / MAP: ' . (string) $item['retail_price'] . ' / ' . (string) $item['wholesale_price'] . ' / ' . (string) $item['map_price'] . ' / Purchasable: ' . (int) $item['purchasable'] . ' / Discontinued: ' . (int) $item['discontinued'] . ' / Classification: ' . (string) $item['classification'] . ' / Review flags: ' . (string) $item['review_flags'] . ' / Environment: ' . (string) $item['environment'] . ' / Observed UTC: ' . (string) $item['created_at'] . ' / Source completed UTC: ' . (string) $run['completed_at'] . ' / Mapping: ' . $preview['mapping_state'] . ' / Preview: ' . ( $preview['eligible'] ? 'eligible; explicit approval required' : $preview['reason'] );
 				}
 				echo '<tr><td>';
 				if ( $is_link ) {
 					echo '<label><input type="checkbox" name="manual_item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '"> ' . esc_html__( 'Explicitly approve preview link', 'ideaxperts-endless-aisles' ) . '</label>';
 				} elseif ( $is_create ) {
-					echo '<label><input type="checkbox" name="item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '"> ' . esc_html__( 'Create new Draft product', 'ideaxperts-endless-aisles' ) . '</label>';
+					echo '<label><input type="checkbox" name="item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '"> ' . esc_html( 'Create new ' . ucfirst( (string) ( $binding['proposed_status'] ?? '' ) ) . ' product' ) . '</label>';
 				} elseif ( $decision['automatic'] ) {
 					echo '<input type="checkbox" name="item_ids[]" value="' . esc_attr( (string) $item['id'] ) . '">';
 				} else {
@@ -197,7 +198,7 @@ final class CatalogImportAdmin {
 			echo '<h3>' . esc_html__( 'Latest import run', 'ideaxperts-endless-aisles' ) . '</h3><p>' . esc_html( sprintf( '#%d — %s — %s — %d items', $latest['id'], strtoupper( (string) $latest['environment'] ), $latest['status'], $latest['item_count'] ) ) . '</p>';
 			echo '<p>' . esc_html( sprintf( 'Ready: %d · Applied: %d · Manual: %d · Failed/blocked: %d', (int) ( $counts['ready'] ?? 0 ), (int) ( $counts['applied'] ?? 0 ), $manual, $failed ) ) . '</p>';
 			foreach ( $this->imports->items( (int) $latest['id'], 5 ) as $result ) {
-				echo '<p>' . esc_html( sprintf( '%s / %s � %s � %s � WooCommerce #%d', $result['ea_product_id'], $result['ea_option_id'], 'applied' === $result['status'] && (int) $result['target_wc_product_id'] > 0 ? 'created / already linked' : (string) $result['status'], $result['failure_code'], $result['target_wc_product_id'] ) ) . '</p>';
+				echo '<p>' . esc_html( sprintf( '%s / %s  %s  %s  WooCommerce #%d', $result['ea_product_id'], $result['ea_option_id'], 'applied' === $result['status'] && (int) $result['target_wc_product_id'] > 0 ? 'created / already linked' : (string) $result['status'], $result['failure_code'], $result['target_wc_product_id'] ) ) . '</p>';
 			}
 			if ( in_array( (string) $latest['status'], array( 'queued', 'running', 'pausing_stale', 'awaiting_reapproval', 'failed_recoverable', 'cancelling' ), true ) ) {
 				echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="ideaxperts_ea_cancel_import"><input type="hidden" name="import_run_id" value="' . esc_attr( (string) $latest['id'] ) . '">';
@@ -242,7 +243,7 @@ final class CatalogImportAdmin {
 			return;
 		}
 		echo '<p><strong>Projection current.</strong> Awaiting explicit confirmation; the worker rechecks approval before any save.</p>';
-		$description = 'qa' === ( $built['manifest']['environment'] ?? '' ) ? 'Confirm %d immutable controlled QA actions. Approved candidates create real WooCommerce Draft products.' : 'Confirm %d immutable import actions. Approved new candidates request real simple Draft products after policy validation; existing matches create plugin-owned links.';
+		$description = 'qa' === ( $built['manifest']['environment'] ?? '' ) ? 'Confirm %d immutable controlled QA actions with the exact displayed price, MAP decision, and product status.' : 'Confirm %d immutable import actions.';
 		echo '<div class="notice notice-warning inline"><p>' . esc_html( sprintf( $description, count( $built['manifest']['items'] ) ) ) . '</p></div>';
 		foreach ( $built['manifest']['items'] as $approved ) {
 			if ( ! is_array( $approved ) || 'create' !== ( $approved['action'] ?? '' ) || ! is_array( $approved['creation_binding'] ?? null ) || ! is_array( $approved['vendor'] ?? null ) ) {
@@ -250,7 +251,7 @@ final class CatalogImportAdmin {
 			}
 			$binding = $approved['creation_binding'];
 			$vendor  = $approved['vendor'];
-			echo '<p><strong>' . esc_html( sanitize_text_field( (string) ( $vendor['vendor_title'] ?? '' ) ) ) . '</strong> / UPC ' . esc_html( (string) $binding['normalized_upc'] ) . ' / Regular price: ' . esc_html( '' === $binding['regular_price'] ? 'policy missing — reapproval required when available' : (string) $binding['regular_price'] ) . ' / Policy: ' . esc_html( (string) $binding['pricing_id'] . ':' . (string) $binding['pricing_version'] ) . '</p>';
+			echo '<p><strong>' . esc_html( sanitize_text_field( (string) ( $vendor['vendor_title'] ?? '' ) ) ) . '</strong> / EA product / option: ' . esc_html( (string) $vendor['ea_product_id'] . ' / ' . (string) $vendor['ea_option_id'] ) . ' / UPC ' . esc_html( (string) $binding['normalized_upc'] ) . ' / Retail / Wholesale / MAP: ' . esc_html( (string) $vendor['retail_price'] . ' / ' . (string) $vendor['wholesale_price'] . ' / ' . (string) $vendor['map_price'] ) . ' / Resolved price: ' . esc_html( '' === $binding['regular_price'] ? 'blocked' : (string) $binding['regular_price'] ) . ' / MAP decision: ' . esc_html( (string) $binding['map_decision'] ) . ' / Proposed status: ' . esc_html( ucfirst( (string) $binding['proposed_status'] ) ) . ' / Policy: ' . esc_html( (string) $binding['pricing_id'] . ':' . (string) $binding['pricing_version'] ) . '</p>';
 			echo '<div>' . wp_kses_post( (string) ( $vendor['vendor_option_description'] ?? '' ) ) . '</div>';
 			echo '<p>Approved field projection: <code>' . esc_html( (string) $binding['desired_hash'] ) . '</code></p>';
 			echo '<p>Pricing configuration: <code>' . esc_html( (string) ( $binding['pricing_configuration'] ?? 'not configured' ) ) . '</code> / SHA-256: <code>' . esc_html( (string) $binding['pricing_config'] ) . '</code></p>';
@@ -288,7 +289,7 @@ final class CatalogImportAdmin {
 
 	private function render_preview_notice( string $environment ): void {
 		if ( 'qa' === $environment ) {
-			echo '<p><strong>' . esc_html__( 'QA only', 'ideaxperts-endless-aisles' ) . '</strong> — ' . esc_html__( 'Controlled approvals create real Draft products and QA mappings. Missing pricing policy blocks creation. Legacy preview approvals remain read-only.', 'ideaxperts-endless-aisles' ) . '</p>';
+			echo '<p><strong>' . esc_html__( 'QA only', 'ideaxperts-endless-aisles' ) . '</strong> — ' . esc_html__( 'Controlled approvals create Publish or Draft products exactly as previewed, plus QA mappings. Missing pricing policy blocks creation. Production creation remains blocked.', 'ideaxperts-endless-aisles' ) . '</p>';
 		}
 	}
 

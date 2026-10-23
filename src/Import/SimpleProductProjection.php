@@ -5,9 +5,9 @@ use IdeaXperts\EndlessAisles\ProductMapping\UpcNormalizer;
 
 defined( 'ABSPATH' ) || exit;
 
-/** No creation price is selected until an approved policy is supplied in code. */
+/** No creation price is selected until an approved persisted policy is supplied. */
 final class SimpleProductProjection {
-	public const FIELD_POLICY = 'simple-draft-fields-v1';
+	public const FIELD_POLICY = 'simple-controlled-status-fields-v2';
 	public function __construct( private readonly ?CreationPricingPolicyInterface $pricing = null ) {}
 
 	/**
@@ -16,7 +16,7 @@ final class SimpleProductProjection {
 	 */
 	public function build( array $vendor ): array {
 		$flags = $vendor['review_flags'] ?? array();
-		if ( 'new_product_candidate' !== ( $vendor['classification'] ?? '' ) || ! is_array( $flags ) || array() !== $flags || 1 !== (int) ( $vendor['purchasable'] ?? 0 ) || 0 !== (int) ( $vendor['discontinued'] ?? 1 ) || '' === (string) ( $vendor['ea_product_id'] ?? '' ) || '' === (string) ( $vendor['ea_option_id'] ?? '' ) ) {
+		if ( 'new_product_candidate' !== ( $vendor['classification'] ?? '' ) || ! is_array( $flags ) || array_diff( $flags, array( 'retail_below_map' ) ) || 1 !== (int) ( $vendor['purchasable'] ?? 0 ) || 0 !== (int) ( $vendor['discontinued'] ?? 1 ) || '' === (string) ( $vendor['ea_product_id'] ?? '' ) || '' === (string) ( $vendor['ea_option_id'] ?? '' ) ) {
 			throw new \RuntimeException( 'creation_ineligible' );
 		}
 		$upc = (string) ( $vendor['normalized_upc'] ?? '' );
@@ -32,12 +32,18 @@ final class SimpleProductProjection {
 		if ( null !== $price && ! ConfiguredCreationPricingPolicy::valid_decimal( $price ) ) {
 			throw new \RuntimeException( 'creation_invalid_price' );
 		}
+		$failure      = null === $price ? ( $this->pricing instanceof ConfiguredCreationPricingPolicy ? $this->pricing->failure_code( $vendor ) : 'pricing_policy_missing' ) : '';
+		$map_decision = $this->pricing instanceof ConfiguredCreationPricingPolicy ? $this->pricing->map_decision( $vendor ) : 'not_evaluated';
+		$status       = '' === $failure ? ( 'below_map' === $map_decision ? 'draft' : 'publish' ) : 'blocked';
 		return array(
 			'title'         => $title,
 			'description'   => $description,
 			'upc'           => $upc,
 			'regular_price' => $price ?? '',
-			'failure_code'  => null === $price ? ( $this->pricing instanceof ConfiguredCreationPricingPolicy ? $this->pricing->failure_code( $vendor ) : 'pricing_policy_missing' ) : '',
+			'failure_code'  => $failure,
+			'map_decision'  => $map_decision,
+			'status'        => $status,
+			'review_flags'  => (string) wp_json_encode( $flags ),
 		);
 	}
 
@@ -60,7 +66,7 @@ final class SimpleProductProjection {
 			$desired,
 			array(
 				'product_type'        => 'simple',
-				'status'              => 'draft',
+				'status'              => $desired['status'],
 				'correlation_version' => '3c-v1',
 			)
 		);
@@ -77,13 +83,25 @@ final class SimpleProductProjection {
 			'description_hash' => hash( 'sha256', $desired['description'] ),
 			'normalized_upc'   => $desired['upc'],
 			'regular_price'    => $desired['regular_price'],
+			'map_decision'     => $desired['map_decision'],
+			'proposed_status'  => $desired['status'],
+			'review_flags'     => $desired['review_flags'],
 			'failure_code'     => $desired['failure_code'],
 		);
 		if ( 'controlled_qa' === ( $vendor['creation_mode'] ?? '' ) ) {
 			$binding['creation_mode'] = 'controlled_qa';
 		}
 		if ( $this->pricing instanceof ConfiguredCreationPricingPolicy ) {
-			$binding['pricing_configuration'] = (string) wp_json_encode( $this->pricing->configuration(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+			$configuration                    = $this->pricing->configuration();
+			$binding['pricing_rule']          = (string) ( $configuration['rule'] ?? '' );
+			$binding['source_field']          = (string) ( $configuration['source_field'] ?? '' );
+			$binding['currency']              = (string) ( $configuration['currency'] ?? '' );
+			$binding['decimal_places']        = (int) ( $configuration['decimal_places'] ?? -1 );
+			$binding['max_age_seconds']       = (int) ( $configuration['max_age_seconds'] ?? 0 );
+			$binding['retail_price']          = (string) ( $vendor['retail_price'] ?? '' );
+			$binding['wholesale_price']       = (string) ( $vendor['wholesale_price'] ?? '' );
+			$binding['map_price']             = (string) ( $vendor['map_price'] ?? '' );
+			$binding['pricing_configuration'] = (string) wp_json_encode( $configuration, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 		}
 		return $binding;
 	}

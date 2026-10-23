@@ -24,6 +24,7 @@ final class MatchClassifier {
 		'invalid_vendor_upc',
 		'conflicting_existing_mapping',
 		'ambiguous_match',
+		'retail_below_map',
 	);
 
 	/**
@@ -43,7 +44,10 @@ final class MatchClassifier {
 			$flags[] = 'not_purchasable';
 		}
 		$price_warnings = PriceInspector::warnings( $option );
-		if ( $price_warnings ) {
+		if ( in_array( 'retail_below_map', $price_warnings, true ) ) {
+			$flags[] = 'retail_below_map';
+		}
+		if ( array_diff( $price_warnings, array( 'retail_below_map' ) ) ) {
 			$flags[] = 'suspicious_price';
 		}
 		if ( $duplicate_vendor ) {

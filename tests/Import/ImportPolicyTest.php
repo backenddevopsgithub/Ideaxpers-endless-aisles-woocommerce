@@ -41,6 +41,13 @@ final class ImportPolicyTest extends TestCase {
 		self::assertFalse( $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'suspicious_price' ) ), true )['eligible'] );
 	}
 
+	public function test_retail_below_map_is_the_only_review_condition_allowed_for_creation(): void {
+		$result = $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'retail_below_map' ) ) );
+		self::assertTrue( $result['eligible'] );
+		self::assertSame( 'create', $result['action'] );
+		self::assertFalse( $this->policy->evaluate( $this->item( 'new_product_candidate', array( 'retail_below_map', 'suspicious_price' ) ) )['eligible'] );
+	}
+
 	/** @param list<string> $flags @return array<string,mixed> */
 	private function item( string $classification, array $flags = array(), int $wc_product_id = 0 ): array {
 		return array(

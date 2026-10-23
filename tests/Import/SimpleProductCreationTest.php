@@ -83,7 +83,7 @@ final class SimpleProductCreationTest extends TestCase {
 		$this->live_state = new LiveCatalogStateProvider( new SettingsRepository() );
 		$this->imports = new ImportRepository( $this->live_state );
 		$this->writer->after_persistence = function (): void {
-			$product = new ReadOnlyProduct( 501, 'simple', 'draft', 'Safe title', (string) $this->item()['normalized_upc'], '' );
+			$product = new ReadOnlyProduct( 501, 'simple', 'publish', 'Safe title', (string) $this->item()['normalized_upc'], '' );
 			$GLOBALS['ea_wc_products'] = array( $product );
 			$GLOBALS['ea_wc_product_map'][501] = $product;
 		};
@@ -298,7 +298,7 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( 1, $this->mapping_count() );
 		self::assertSame( 1, $this->imports->run( $this->run )['applied_count'] );
 		self::assertSame( 'vendor_created', $this->db->tables['wp_ideaxperts_ea_catalog_identities'][0]['ownership_mode'] );
-		self::assertSame( 'draft', $this->writer->objects[501]['status'] );
+		self::assertSame( 'publish', $this->writer->objects[501]['status'] );
 		self::assertSame( 'Safe title', $this->writer->objects[501]['projection']['title'] );
 		self::assertSame( '<p>Description</p>', $this->writer->objects[501]['projection']['description'] );
 	}
@@ -783,6 +783,45 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertSame( 0, $this->mapping_count() );
 	}
 
+	/** @dataProvider configuredStatusCases */
+	public function test_configured_map_status_and_recovery_use_exact_approved_projection( string $retail, string $map, array $flags, string $status ): void {
+		$GLOBALS['ea_test_options']['woocommerce_currency'] = 'USD';
+		$GLOBALS['ea_test_options']['woocommerce_price_num_decimals'] = 2;
+		$this->vendor['created_at'] = $GLOBALS['ea_now'];
+		$this->vendor['retail_price'] = $retail;
+		$this->vendor['wholesale_price'] = '10.00';
+		$this->vendor['map_price'] = $map;
+		$this->vendor['review_flags'] = wp_json_encode( $flags );
+		$this->writer->mode = 'ambiguous';
+		$this->approve( 'qa', true, new ConfiguredCreationPricingPolicy( ConfiguredCreationPricingPolicyTest::staging_config() ) );
+		$binding = $this->imports->approved_creation_binding( (int) $this->item()['id'] );
+		self::assertSame( $status, $binding['proposed_status'] );
+		self::assertSame( $retail, $binding['regular_price'] );
+		$this->deliver_callback();
+		self::assertSame( 'applied', $this->item()['status'] );
+		self::assertSame( $status, $this->writer->objects[501]['status'] );
+		self::assertSame( 1, $this->writer->saves );
+		self::assertSame( 1, $this->mapping_count() );
+	}
+
+	public static function configuredStatusCases(): array {
+		return array(
+			'clean publish' => array( '29.99', '0', array(), 'publish' ),
+			'equal MAP publish' => array( '24.99', '24.99', array(), 'publish' ),
+			'above MAP publish' => array( '29.99', '24.99', array(), 'publish' ),
+			'below MAP draft' => array( '19.99', '24.99', array( 'retail_below_map' ), 'draft' ),
+		);
+	}
+
+	public function test_status_drift_blocks_the_final_permit(): void {
+		$this->approve();
+		$ready = $this->ready();
+		$binding = $this->imports->approved_creation_binding( (int) $this->item()['id'] );
+		$binding['proposed_status'] = 'draft';
+		self::assertFalse( $this->imports->acquire_final_write_permit( (int) $this->item()['id'], $ready[0], $ready[1], 1, $this->action['id'], $this->action['logical_key'], $this->action['dispatch_generation'], $ready[2], $binding, $this->projection ) );
+		self::assertSame( 0, $this->writer->saves );
+	}
+
 	/** @dataProvider changedFields */
 	public function test_snapshot_field_drift_cannot_refresh_original_approval( string $field, string $value ): void {
 		$this->approve();
@@ -890,7 +929,7 @@ final class SimpleProductCreationTest extends TestCase {
 		self::assertTrue( $this->permit( $ready ) );
 		if ( 'missing' !== $mode ) { $this->writer->create_draft( $this->item(), $this->projection->build( $this->imports->creation_snapshot( (int) $this->item()['id'] ) ) ); }
 		if ( 'multiple' === $mode ) { $this->writer->objects[502] = $this->writer->objects[501]; }
-		if ( 'invalid' === $mode ) { $this->writer->objects[501]['status'] = 'publish'; }
+		if ( 'invalid' === $mode ) { $this->writer->objects[501]['status'] = 'draft'; }
 		if ( 'upc' === $mode ) { $this->state->upc_owners[] = '999:0'; }
 		$before = $this->writer->saves;
 		$this->expire();
