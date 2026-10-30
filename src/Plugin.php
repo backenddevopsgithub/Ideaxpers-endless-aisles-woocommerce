@@ -27,6 +27,8 @@ use IdeaXperts\EndlessAisles\Database\DryRunRepository;
 use IdeaXperts\EndlessAisles\Database\SyncRunRepository;
 use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
+use IdeaXperts\EndlessAisles\Monitoring\AlertNotifier;
+use IdeaXperts\EndlessAisles\Monitoring\SchedulerHealth;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
 use IdeaXperts\EndlessAisles\Catalog\DryRunManager;
 use IdeaXperts\EndlessAisles\Catalog\MatchClassifier;
@@ -64,6 +66,7 @@ final class Plugin {
 		}
 
 		$this->register_services();
+		$this->container->get( AlertNotifier::class )->register();
 		if ( StatusRefresh::requested() ) {
 			StatusRefresh::authorize();
 			// A status refresh must not migrate, schedule or reconcile background work.
@@ -74,6 +77,7 @@ final class Plugin {
 		$this->container->get( Admin::class )->register();
 		$this->container->get( InventoryScheduler::class )->register();
 		$this->container->get( CheckoutStockGuard::class )->register();
+		$this->container->get( SchedulerHealth::class )->register();
 		$this->container->get( DryRunManager::class )->register();
 		$this->container->get( ImportManager::class )->register();
 	}
@@ -153,6 +157,8 @@ final class Plugin {
 				$this->container->get( DatabaseLogger::class )
 			)
 		);
+		$this->container->set( AlertNotifier::class, fn() => new AlertNotifier( $this->container->get( SettingsRepository::class ) ) );
+		$this->container->set( SchedulerHealth::class, fn() => new SchedulerHealth( $this->container->get( InventoryScheduler::class ), $this->container->get( DatabaseLogger::class ) ) );
 		$this->container->set( InventoryRepository::class, static fn() => new InventoryRepository() );
 		$this->container->set( WooStockWriter::class, static fn() => new WooStockWriter() );
 		$this->container->set(

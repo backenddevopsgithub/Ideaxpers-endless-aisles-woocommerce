@@ -287,6 +287,17 @@ function wc_get_product_types(): array {
 function get_post_stati(): array {
 	return array( 'publish' => 'publish', 'draft' => 'draft', 'pending' => 'pending', 'private' => 'private', 'future' => 'future', 'trash' => 'trash', 'auto-draft' => 'auto-draft', 'inherit' => 'inherit' );
 }
+$GLOBALS['ea_mail'] = array();
+function wp_mail( string $to, string $subject, string $message ): bool {
+	$GLOBALS['ea_mail'][] = compact( 'to', 'subject', 'message' );
+	return empty( $GLOBALS['ea_mail_failure'] );
+}
+function is_email( string $email ): string|false {
+	return false !== filter_var( $email, FILTER_VALIDATE_EMAIL ) ? $email : false;
+}
+function wp_strip_all_tags( string $text ): string {
+	return trim( strip_tags( $text ) );
+}
 function WC(): object {
 	return $GLOBALS['ea_wc'] ?? (object) array( 'cart' => null );
 }

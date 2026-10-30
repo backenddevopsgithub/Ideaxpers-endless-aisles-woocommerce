@@ -4,8 +4,9 @@ namespace IdeaXperts\EndlessAisles\Logging;
 defined( 'ABSPATH' ) || exit;
 
 final class DatabaseLogger {
-	private const MAX_ROWS = 2000;
-	private const LEVELS   = array(
+	public const ALERT_HOOK = 'ideaxperts_ea_alert';
+	private const MAX_ROWS  = 2000;
+	private const LEVELS    = array(
 		'debug'    => 10,
 		'info'     => 20,
 		'warning'  => 30,
@@ -15,7 +16,11 @@ final class DatabaseLogger {
 
 	/** @param array<string,mixed> $context */
 	public function log( string $level, string $message, array $context = array() ): void {
-		$level    = isset( self::LEVELS[ $level ] ) ? $level : 'info';
+		$level = isset( self::LEVELS[ $level ] ) ? $level : 'info';
+		if ( self::LEVELS[ $level ] >= self::LEVELS['error'] ) {
+			// Alerting is independent of the stored log level and receives only redacted data.
+			do_action( 'ideaxperts_ea_alert', $level, (string) Redactor::redact( $message ), Redactor::redact( $context ) );
+		}
 		$settings = get_option( 'ideaxperts_ea_settings', array() );
 		$minimum  = is_array( $settings ) ? (string) ( $settings['log_level'] ?? 'warning' ) : 'warning';
 		if ( self::LEVELS[ $level ] < ( self::LEVELS[ $minimum ] ?? 30 ) ) {

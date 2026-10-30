@@ -56,6 +56,10 @@ final class InventoryScheduler {
 		return function_exists( 'as_enqueue_async_action' ) && as_enqueue_async_action( self::CONTINUE_HOOK, array(), self::GROUP, true ) > 0;
 	}
 
+	public function is_configured(): bool {
+		return $this->configured();
+	}
+
 	public function is_scheduled(): bool {
 		return function_exists( 'as_next_scheduled_action' ) && false !== as_next_scheduled_action( self::HOOK, array(), self::GROUP );
 	}

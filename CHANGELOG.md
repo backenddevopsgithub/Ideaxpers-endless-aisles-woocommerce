@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- Added alert emails to the configured alert address for every error/critical event (catalog dry-run, inventory and checkout verification failures), redacted and throttled to one email per distinct message every 3 hours, plus a 15-minute request-driven health check that alerts when scheduled tasks are overdue (stalled server cron) or inventory has not completed for 2 hours.
 - Added live vendor stock verification at order placement for classic and block (Store API) checkout. Only actively mapped simple products are checked; shortages and vendor-omitted SKUs block the order with a customer message, local stock is refreshed from the live answer, and a new `checkout_unverified` setting (default Block) decides what happens when the vendor cannot be reached.
 - Added scheduled inventory synchronization for active simple-product mappings: batched read-only `GET /api/stock?sku=` lookups, managed stock with backorders disabled, writes limited to products carrying this plugin's creation markers, vendor-omitted SKUs set to 0, API failures leaving stock unchanged, an expiring single-owner lock, stale-observation protection, and resumable 25-second passes recorded in sync runs.
 - Added Milestone 3C's simple Draft writer, committed creation intent, exact operation correlation, read-only crash recovery and transactional `vendor_created` mapping finalization.
