@@ -15,6 +15,10 @@ use IdeaXperts\EndlessAisles\API\CatalogService;
 use IdeaXperts\EndlessAisles\API\BaseUrlResolver;
 use IdeaXperts\EndlessAisles\API\ConnectionTester;
 use IdeaXperts\EndlessAisles\API\EndpointRegistry;
+use IdeaXperts\EndlessAisles\API\StockService;
+use IdeaXperts\EndlessAisles\Inventory\InventoryRepository;
+use IdeaXperts\EndlessAisles\Inventory\InventorySync;
+use IdeaXperts\EndlessAisles\Inventory\WooStockWriter;
 use IdeaXperts\EndlessAisles\Core\Container;
 use IdeaXperts\EndlessAisles\Core\Dependencies;
 use IdeaXperts\EndlessAisles\Database\Migrator;
@@ -140,11 +144,30 @@ final class Plugin {
 			)
 		);
 		$this->container->set(
+			StockService::class,
+			fn() => new StockService(
+				$this->container->get( SettingsRepository::class ),
+				$this->container->get( BaseUrlResolver::class ),
+				$this->container->get( DatabaseLogger::class )
+			)
+		);
+		$this->container->set(
+			InventorySync::class,
+			fn() => new InventorySync(
+				$this->container->get( StockService::class ),
+				new InventoryRepository(),
+				new WooStockWriter(),
+				$this->container->get( DatabaseLogger::class ),
+				continuation: static fn(): bool => InventoryScheduler::schedule_continuation()
+			)
+		);
+		$this->container->set(
 			InventoryScheduler::class,
 			fn() => new InventoryScheduler(
 				$this->container->get( SettingsRepository::class ),
 				$this->container->get( DatabaseLogger::class ),
-				$this->container->get( SyncRunRepository::class )
+				$this->container->get( SyncRunRepository::class ),
+				$this->container->get( InventorySync::class )
 			)
 		);
 		$this->container->set(

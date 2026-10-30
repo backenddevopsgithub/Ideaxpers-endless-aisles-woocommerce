@@ -2,6 +2,7 @@
 namespace IdeaXperts\EndlessAisles\Scheduling;
 
 use IdeaXperts\EndlessAisles\Database\SyncRunRepository;
+use IdeaXperts\EndlessAisles\Inventory\InventorySync;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 use IdeaXperts\EndlessAisles\Settings\SettingsValidator;
@@ -10,14 +11,16 @@ defined( 'ABSPATH' ) || exit;
 
 final class InventoryScheduler {
 	public const HOOK             = 'ideaxperts_ea_inventory_sync';
+	public const CONTINUE_HOOK    = 'ideaxperts_ea_inventory_sync_continue';
 	public const GROUP            = 'ideaxperts-endless-aisles';
 	public const INTERVAL_MINUTES = 30;
 
-	public function __construct( private readonly SettingsRepository $settings, private readonly DatabaseLogger $logger, private readonly ?SyncRunRepository $sync_runs = null ) {}
+	public function __construct( private readonly SettingsRepository $settings, private readonly DatabaseLogger $logger, private readonly ?SyncRunRepository $sync_runs = null, private readonly ?InventorySync $sync = null ) {}
 
 	public function register(): void {
 		add_action( 'init', array( $this, 'ensure_scheduled' ), 30 );
 		add_action( self::HOOK, array( $this, 'handle' ) );
+		add_action( self::CONTINUE_HOOK, array( $this, 'handle' ) );
 	}
 
 	public function ensure_scheduled(): void {
@@ -40,8 +43,17 @@ final class InventoryScheduler {
 			$this->logger->log( 'info', 'Inventory synchronization skipped: integration is not configured.' );
 			return;
 		}
-		$this->record_status( 'not_implemented', 'Inventory import is not implemented in Milestone 1.' );
-		$this->logger->log( 'info', 'Inventory synchronization skipped: importing inventory is outside Milestone 1.' );
+		if ( null === $this->sync ) {
+			$this->record_status( 'not_implemented', 'Inventory import is not implemented in Milestone 1.' );
+			$this->logger->log( 'info', 'Inventory synchronization skipped: importing inventory is outside Milestone 1.' );
+			return;
+		}
+		$this->sync->run( (string) $this->settings->get( 'environment', 'qa' ) );
+	}
+
+	/** Queue one immediate continuation pass; unique so overlapping requests collapse. */
+	public static function schedule_continuation(): bool {
+		return function_exists( 'as_enqueue_async_action' ) && as_enqueue_async_action( self::CONTINUE_HOOK, array(), self::GROUP, true ) > 0;
 	}
 
 	public function is_scheduled(): bool {
@@ -51,6 +63,7 @@ final class InventoryScheduler {
 	public static function unschedule_all(): void {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( self::HOOK, array(), self::GROUP );
+			as_unschedule_all_actions( self::CONTINUE_HOOK, array(), self::GROUP );
 		}
 	}
 

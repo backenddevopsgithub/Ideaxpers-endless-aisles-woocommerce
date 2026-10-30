@@ -11,8 +11,8 @@ defined( 'ABSPATH' ) || exit;
 
 final class CatalogService {
 	public const PER_PAGE        = 10;
-	public const MAX_ATTEMPTS    = 3;
-	public const MAX_RETRY_AFTER = 30;
+	public const MAX_ATTEMPTS    = RequestRetry::MAX_ATTEMPTS;
+	public const MAX_RETRY_AFTER = RequestRetry::MAX_RETRY_AFTER;
 	private readonly Closure $client_factory;
 	private readonly Closure $sleeper;
 
@@ -45,7 +45,7 @@ final class CatalogService {
 		$paginator = new ProductPaginator();
 		$path      = $paginator->first_path( $page, self::PER_PAGE );
 		$client    = ( $this->client_factory )( $this->base_urls->resolve( $environment, $confirmed ), array( 'X-EA-REQUEST-TOKEN' => $token ) );
-		$response  = $this->request_with_retry( $client, $path );
+		$response  = RequestRetry::get( $client, $path, $this->sleeper );
 		$next_path = $paginator->next_path( $response );
 		$products  = array();
 		foreach ( $response['data'] as $product ) {
@@ -76,23 +76,5 @@ final class CatalogService {
 			'total_products' => isset( $response['total'] ) && is_int( $response['total'] ) && $response['total'] >= 0 ? $response['total'] : null,
 			'total_pages'    => isset( $response['last_page'] ) && is_int( $response['last_page'] ) && $response['last_page'] >= 1 ? $response['last_page'] : null,
 		);
-	}
-
-	/** @return array<string,mixed> */
-	private function request_with_retry( ApiClientInterface $client, string $path ): array {
-		for ( $attempt = 1; $attempt <= self::MAX_ATTEMPTS; ++$attempt ) {
-			try {
-				return $client->request( 'GET', $path );
-			} catch ( ApiException $exception ) {
-				$status    = $exception->getCode();
-				$retryable = 429 === $status || $status >= 500 || str_contains( strtolower( $exception->getMessage() ), 'timed out' ) || str_contains( strtolower( $exception->getMessage() ), 'request failed' );
-				if ( ! $retryable || $attempt >= self::MAX_ATTEMPTS ) {
-					throw $exception;
-				}
-				$retry_after = (int) ( $exception->context()['retry_after'] ?? $attempt );
-				( $this->sleeper )( min( self::MAX_RETRY_AFTER, max( 1, $retry_after ) ) );
-			}
-		}
-		throw new ApiException( 'Endless Aisles retry limit exceeded.' );
 	}
 }

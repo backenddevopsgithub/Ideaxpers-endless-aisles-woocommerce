@@ -153,7 +153,7 @@ final class InventorySchedulerTest extends TestCase {
 		$this->settings->save( array( 'environment' => 'qa' ) );
 		$scheduler->ensure_scheduled();
 		self::assertFalse( $GLOBALS['ea_scheduled'] );
-		self::assertSame( 1, $GLOBALS['ea_unschedule_calls'] );
+		self::assertSame( 2, $GLOBALS['ea_unschedule_calls'] );
 		self::assertSame( array(), $this->wpdb->rows );
 	}
 
@@ -165,7 +165,7 @@ final class InventorySchedulerTest extends TestCase {
 
 		self::assertFalse( $GLOBALS['ea_scheduled'] );
 		self::assertTrue( $GLOBALS['ea_unrelated_scheduled'] );
-		self::assertSame( 3, $GLOBALS['ea_unschedule_calls'] );
+		self::assertSame( 4, $GLOBALS['ea_unschedule_calls'] );
 	}
 
 	public function test_deactivation_unschedules_dry_run_jobs_with_nonempty_arguments(): void {
