@@ -22,7 +22,13 @@ final class FakeOrder {
 			'postcode'   => '27511',
 			'country'    => 'US',
 		);
-		$this->billing_address  = array_merge( $this->shipping_address, array( 'first_name' => 'Billing', 'address_1' => '9 Billing Rd' ) );
+		$this->billing_address  = array_merge(
+			$this->shipping_address,
+			array(
+				'first_name' => 'Billing',
+				'address_1'  => '9 Billing Rd',
+			)
+		);
 	}
 
 	public function get_id(): int {

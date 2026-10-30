@@ -30,7 +30,10 @@ use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\Monitoring\AlertNotifier;
 use IdeaXperts\EndlessAisles\OrderIntegration\OrderIntentRecorder;
 use IdeaXperts\EndlessAisles\OrderIntegration\OrderPayloadBuilder;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionClient;
 use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionRepository;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionScheduler;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionWorker;
 use IdeaXperts\EndlessAisles\OrderIntegration\SubmissionGates;
 use IdeaXperts\EndlessAisles\Monitoring\SchedulerHealth;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
@@ -83,6 +86,7 @@ final class Plugin {
 		$this->container->get( CheckoutStockGuard::class )->register();
 		$this->container->get( SchedulerHealth::class )->register();
 		$this->container->get( OrderIntentRecorder::class )->register();
+		$this->container->get( OrderSubmissionScheduler::class )->register();
 		$this->container->get( DryRunManager::class )->register();
 		$this->container->get( ImportManager::class )->register();
 	}
@@ -166,11 +170,26 @@ final class Plugin {
 		$this->container->set( SchedulerHealth::class, fn() => new SchedulerHealth( $this->container->get( InventoryScheduler::class ), $this->container->get( DatabaseLogger::class ) ) );
 		$this->container->set( InventoryRepository::class, static fn() => new InventoryRepository() );
 		$this->container->set( OrderSubmissionRepository::class, static fn() => new OrderSubmissionRepository() );
+		$this->container->set( SubmissionGates::class, fn() => new SubmissionGates( $this->container->get( SettingsRepository::class ) ) );
+		$this->container->set(
+			OrderSubmissionScheduler::class,
+			fn() => new OrderSubmissionScheduler(
+				new OrderSubmissionWorker(
+					$this->container->get( SubmissionGates::class ),
+					$this->container->get( InventoryRepository::class ),
+					$this->container->get( OrderSubmissionRepository::class ),
+					new OrderPayloadBuilder(),
+					new OrderSubmissionClient( $this->container->get( SettingsRepository::class ), $this->container->get( BaseUrlResolver::class ), $this->container->get( DatabaseLogger::class ) ),
+					$this->container->get( DatabaseLogger::class )
+				),
+				$this->container->get( SubmissionGates::class )
+			)
+		);
 		$this->container->set(
 			OrderIntentRecorder::class,
 			fn() => new OrderIntentRecorder(
 				$this->container->get( SettingsRepository::class ),
-				new SubmissionGates( $this->container->get( SettingsRepository::class ) ),
+				$this->container->get( SubmissionGates::class ),
 				$this->container->get( InventoryRepository::class ),
 				$this->container->get( OrderSubmissionRepository::class ),
 				new OrderPayloadBuilder(),

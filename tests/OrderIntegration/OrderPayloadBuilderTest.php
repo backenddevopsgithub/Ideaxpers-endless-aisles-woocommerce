@@ -11,8 +11,18 @@ use PHPUnit\Framework\TestCase;
 final class OrderPayloadBuilderTest extends TestCase {
 	/** @var array<int,array{id:int,wc_product_id:int,ea_product_id:string,ea_option_id:string}> */
 	private array $mappings = array(
-		701 => array( 'id' => 1, 'wc_product_id' => 701, 'ea_product_id' => '44095', 'ea_option_id' => '50770' ),
-		702 => array( 'id' => 2, 'wc_product_id' => 702, 'ea_product_id' => '37661', 'ea_option_id' => '57015' ),
+		701 => array(
+			'id'            => 1,
+			'wc_product_id' => 701,
+			'ea_product_id' => '44095',
+			'ea_option_id'  => '50770',
+		),
+		702 => array(
+			'id'            => 2,
+			'wc_product_id' => 702,
+			'ea_product_id' => '37661',
+			'ea_option_id'  => '57015',
+		),
 	);
 
 	public function test_mixed_cart_sends_only_vendor_lines_with_documented_fields(): void {
@@ -21,7 +31,16 @@ final class OrderPayloadBuilderTest extends TestCase {
 		$payload = ( new OrderPayloadBuilder() )->build( $order, 'qa', $this->mappings );
 
 		self::assertNotNull( $payload );
-		self::assertSame( array( array( 'id' => 50770, 'quantity' => 2, 'price' => 36.99 ) ), $payload->payload['line_items'] );
+		self::assertSame(
+			array(
+				array(
+					'id'       => 50770,
+					'quantity' => 2,
+					'price'    => 36.99,
+				),
+			),
+			$payload->payload['line_items']
+		);
 		self::assertSame( CustomOrderId::for_order( 5001, 'qa' ), $payload->payload['custom_order_id'] );
 		self::assertSame(
 			array(
@@ -53,11 +72,11 @@ final class OrderPayloadBuilderTest extends TestCase {
 	}
 
 	public function test_hash_is_stable_across_line_order_and_rebuilds_and_changes_with_content(): void {
-		$builder = new OrderPayloadBuilder();
-		$a       = $builder->build( $this->order( array( $this->line( 701, 1, 10.0 ), $this->line( 702, 3, 30.0 ) ) ), 'qa', $this->mappings );
-		$b       = $builder->build( $this->order( array( $this->line( 702, 3, 30.0 ), $this->line( 701, 1, 10.0 ) ) ), 'qa', $this->mappings );
-		$c       = $builder->build( $this->order( array( $this->line( 702, 2, 20.0 ), $this->line( 701, 1, 10.0 ) ) ), 'qa', $this->mappings );
-		$moved   = $this->order( array( $this->line( 701, 1, 10.0 ), $this->line( 702, 3, 30.0 ) ) );
+		$builder                             = new OrderPayloadBuilder();
+		$a                                   = $builder->build( $this->order( array( $this->line( 701, 1, 10.0 ), $this->line( 702, 3, 30.0 ) ) ), 'qa', $this->mappings );
+		$b                                   = $builder->build( $this->order( array( $this->line( 702, 3, 30.0 ), $this->line( 701, 1, 10.0 ) ) ), 'qa', $this->mappings );
+		$c                                   = $builder->build( $this->order( array( $this->line( 702, 2, 20.0 ), $this->line( 701, 1, 10.0 ) ) ), 'qa', $this->mappings );
+		$moved                               = $this->order( array( $this->line( 701, 1, 10.0 ), $this->line( 702, 3, 30.0 ) ) );
 		$moved->shipping_address['postcode'] = '27512';
 
 		self::assertSame( $a?->hash, $b?->hash );
@@ -73,7 +92,7 @@ final class OrderPayloadBuilderTest extends TestCase {
 	}
 
 	public function test_billing_address_is_used_when_order_has_no_shipping_address(): void {
-		$order = $this->order( array( $this->line( 701, 1, 10.0 ) ) );
+		$order           = $this->order( array( $this->line( 701, 1, 10.0 ) ) );
 		$order->shipping = false;
 
 		self::assertSame( 'Billing', ( new OrderPayloadBuilder() )->build( $order, 'qa', $this->mappings )?->payload['shipping']['first_name'] );
@@ -96,8 +115,8 @@ final class OrderPayloadBuilderTest extends TestCase {
 		$this->assertFailure( 'line_variation_unsupported', $this->order( array( new FakeOrderItem( 701, 1, 10.0, FakeOrderItem::owned_product( '44095', '50770' ), 9 ) ) ), $this->mappings );
 		$this->assertFailure( 'line_price_invalid', $this->order( array( $this->line( 701, 1, 0.0 ) ) ), $this->mappings );
 
-		$bad_id                         = $this->mappings;
-		$bad_id[701]['ea_option_id']    = 'opt-1';
+		$bad_id                      = $this->mappings;
+		$bad_id[701]['ea_option_id'] = 'opt-1';
 		$this->assertFailure( 'line_identifier_invalid', $this->order( array( new FakeOrderItem( 701, 1, 10.0, FakeOrderItem::owned_product( '44095', 'opt-1' ) ) ) ), $bad_id );
 	}
 

@@ -19,9 +19,27 @@ final class OrderSubmissionRepositoryTest extends TestCase {
 	public function test_one_row_per_order_and_environment_even_when_line_items_change(): void {
 		$repository = new OrderSubmissionRepository();
 
-		self::assertSame( array( 'id' => 1, 'created' => true ), $repository->record_intent( $this->intent( 42, 'qa', 'hash-a' ) ) );
-		self::assertSame( array( 'id' => 1, 'created' => false ), $repository->record_intent( $this->intent( 42, 'qa', 'hash-b' ) ) );
-		self::assertSame( array( 'id' => 2, 'created' => true ), $repository->record_intent( $this->intent( 42, 'production', 'hash-a' ) ) );
+		self::assertSame(
+			array(
+				'id'      => 1,
+				'created' => true,
+			),
+			$repository->record_intent( $this->intent( 42, 'qa', 'hash-a' ) )
+		);
+		self::assertSame(
+			array(
+				'id'      => 1,
+				'created' => false,
+			),
+			$repository->record_intent( $this->intent( 42, 'qa', 'hash-b' ) )
+		);
+		self::assertSame(
+			array(
+				'id'      => 2,
+				'created' => true,
+			),
+			$repository->record_intent( $this->intent( 42, 'production', 'hash-a' ) )
+		);
 		self::assertCount( 2, $this->wpdb->rows );
 		self::assertSame( hash( 'sha256', 'eaX-qa-42' ), $this->wpdb->rows[1]['idempotency_key'] );
 		self::assertSame( 'endless-aisles:qa', $this->wpdb->rows[1]['source_scope'] );
@@ -30,7 +48,13 @@ final class OrderSubmissionRepositoryTest extends TestCase {
 	public function test_concurrent_insert_loss_returns_the_winning_row(): void {
 		$this->wpdb->race_winner = $this->intent( 42, 'qa', 'hash-a' );
 
-		self::assertSame( array( 'id' => 1, 'created' => false ), ( new OrderSubmissionRepository() )->record_intent( $this->intent( 42, 'qa', 'hash-b' ) ) );
+		self::assertSame(
+			array(
+				'id'      => 1,
+				'created' => false,
+			),
+			( new OrderSubmissionRepository() )->record_intent( $this->intent( 42, 'qa', 'hash-b' ) )
+		);
 	}
 
 	public function test_blocked_rows_are_not_scheduled(): void {
@@ -58,8 +82,8 @@ final class OrderSubmissionRepositoryTest extends TestCase {
 
 /** Enforces the table's unique (wc_order_id, environment) key; can simulate a concurrent winner. */
 final class OrderSubmissionWpdb {
-	public string $prefix  = 'wp_';
-	public int $insert_id  = 0;
+	public string $prefix = 'wp_';
+	public int $insert_id = 0;
 	/** @var array<int,array<string,mixed>> */
 	public array $rows = array();
 	/** @var array<string,mixed>|null */

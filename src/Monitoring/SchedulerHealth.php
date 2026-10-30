@@ -4,6 +4,7 @@ namespace IdeaXperts\EndlessAisles\Monitoring;
 use IdeaXperts\EndlessAisles\Import\ImportManager;
 use IdeaXperts\EndlessAisles\Inventory\InventoryRepository;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionScheduler;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
 
 defined( 'ABSPATH' ) || exit;
@@ -28,7 +29,7 @@ final class SchedulerHealth {
 				return 0;
 			}
 			$count = 0;
-			foreach ( array( InventoryScheduler::GROUP, ImportManager::GROUP ) as $group ) {
+			foreach ( array( InventoryScheduler::GROUP, ImportManager::GROUP, OrderSubmissionScheduler::GROUP ) as $group ) {
 				$count += count(
 					as_get_scheduled_actions(
 						array(

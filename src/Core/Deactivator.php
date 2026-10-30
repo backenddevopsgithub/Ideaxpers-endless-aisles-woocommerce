@@ -6,6 +6,7 @@ use IdeaXperts\EndlessAisles\Catalog\DryRunManager;
 use IdeaXperts\EndlessAisles\Database\DryRunRepository;
 use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Import\ImportManager;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionScheduler;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -17,6 +18,7 @@ final class Deactivator {
 		}
 		InventoryScheduler::unschedule_all();
 		ImportManager::unschedule_all();
+		OrderSubmissionScheduler::unschedule_all();
 		$imports = new ImportRepository();
 		foreach ( $imports->active_run_ids() as $import_run_id ) {
 			$imports->request_cancellation( $import_run_id );

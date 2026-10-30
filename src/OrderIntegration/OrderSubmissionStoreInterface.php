@@ -17,4 +17,37 @@ interface OrderSubmissionStoreInterface {
 
 	/** @return list<array<string,mixed>> */
 	public function recent( int $limit ): array;
+
+	/** @return array<string,mixed>|null */
+	public function get( int $id ): ?array;
+
+	/**
+	 * Rows a sweep should look at: pending/unknown whose retry time has come, and
+	 * submitting rows whose lease expired (a worker died mid-request).
+	 *
+	 * @return list<array<string,mixed>>
+	 */
+	public function due( int $limit ): array;
+
+	/**
+	 * Compare-and-swap into `submitting`, committed before any HTTP request.
+	 * Returns the new owner token, or '' if another worker or state change won.
+	 */
+	public function claim( int $id, string $from_status, int $lease_seconds ): string;
+
+	/**
+	 * Settle an owned `submitting` row; fails if the lease owner changed.
+	 *
+	 * @param array<string,string|int|null> $fields
+	 */
+	public function settle( int $id, string $token, string $to_status, array $fields ): bool;
+
+	/**
+	 * Unowned compare-and-swap for rows no worker holds (blocking before a claim,
+	 * stale intents, expired leases). `$expected` adds equality conditions.
+	 *
+	 * @param array<string,string|int> $expected
+	 * @param array<string,string|int|null> $fields
+	 */
+	public function transition( int $id, string $from_status, array $expected, string $to_status, array $fields ): bool;
 }

@@ -10,7 +10,7 @@ final class SequenceClient implements ApiClientInterface {
 	/** @param list<array<string,mixed>|ApiException> $responses */
 	public function __construct( private array $responses ) {}
 
-	public function request( string $method, string $path ): array {
+	public function request( string $method, string $path, ?array $body = null ): array {
 		$this->requests[] = array( $method, $path );
 		$response         = array_shift( $this->responses );
 		if ( $response instanceof ApiException ) {

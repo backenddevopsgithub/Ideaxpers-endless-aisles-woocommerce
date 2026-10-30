@@ -31,7 +31,12 @@ final class OrderIntentRecorderTest extends TestCase {
 		( new SettingsRepository() )->replace_token( 'qa', 'secret' );
 		$this->mappings           = new MemoryInventoryStore();
 		$this->mappings->mappings = array(
-			array( 'id' => 1, 'wc_product_id' => 701, 'ea_product_id' => '44095', 'ea_option_id' => '50770' ),
+			array(
+				'id'            => 1,
+				'wc_product_id' => 701,
+				'ea_product_id' => '44095',
+				'ea_option_id'  => '50770',
+			),
 		);
 		$this->submissions        = new MemoryOrderSubmissionStore();
 		$this->alerts             = array();
@@ -75,8 +80,8 @@ final class OrderIntentRecorderTest extends TestCase {
 	}
 
 	public function test_unsendable_vendor_order_is_recorded_blocked_and_alerts(): void {
-		$order                               = $this->order( 5002 );
-		$order->shipping_address['country']  = 'CA';
+		$order                              = $this->order( 5002 );
+		$order->shipping_address['country'] = 'CA';
 
 		$this->recorder()->record( 5002 );
 
@@ -84,7 +89,7 @@ final class OrderIntentRecorderTest extends TestCase {
 		self::assertSame( 'shipping_country_unsupported', $this->submissions->rows[1]['last_error_code'] );
 		self::assertSame( '', $this->submissions->rows[1]['payload_hash'] );
 		self::assertStringContainsString( 'NOT queued', $order->notes[0] );
-		self::assertSame( array( array( 'error', 'Paid order with Endless Aisles items cannot be sent to the vendor.' ) ), $this->alerts );
+		self::assertSame( array( array( 'error', 'Paid order #5002 with Endless Aisles items cannot be sent to the vendor.' ) ), $this->alerts );
 	}
 
 	public function test_nothing_is_recorded_when_submission_is_off_unpaid_or_has_no_vendor_lines(): void {
@@ -169,7 +174,7 @@ final class OrderIntentRecorderTest extends TestCase {
 	}
 
 	private function order( int $id ): FakeOrder {
-		$order                       = new FakeOrder( $id, array( new FakeOrderItem( 701, 1, 36.99, FakeOrderItem::owned_product( '44095', '50770' ) ), new FakeOrderItem( 999, 1, 5.0 ) ) );
+		$order                          = new FakeOrder( $id, array( new FakeOrderItem( 701, 1, 36.99, FakeOrderItem::owned_product( '44095', '50770' ) ), new FakeOrderItem( 999, 1, 5.0 ) ) );
 		$GLOBALS['ea_wc_orders'][ $id ] = $order;
 		return $order;
 	}

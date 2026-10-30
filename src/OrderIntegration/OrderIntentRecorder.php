@@ -12,14 +12,19 @@ defined( 'ABSPATH' ) || exit;
  * vendor lines. Never contacts Endless Aisles; the submission worker does.
  */
 final class OrderIntentRecorder {
+	private readonly \Closure $enqueue;
+
 	public function __construct(
 		private readonly SettingsRepository $settings,
 		private readonly SubmissionGates $gates,
 		private readonly InventoryStoreInterface $mappings,
 		private readonly OrderSubmissionStoreInterface $submissions,
 		private readonly OrderPayloadBuilder $builder,
-		private readonly DatabaseLogger $logger
-	) {}
+		private readonly DatabaseLogger $logger,
+		?\Closure $enqueue = null
+	) {
+		$this->enqueue = $enqueue ?? static fn( int $submission_id ): bool => OrderSubmissionScheduler::enqueue( $submission_id );
+	}
 
 	public function register(): void {
 		add_action( 'woocommerce_payment_complete', array( $this, 'record' ), 20, 1 );
@@ -82,7 +87,7 @@ final class OrderIntentRecorder {
 			$this->note( $order, sprintf( 'Endless Aisles: this order was NOT queued for the vendor (%s). Fulfil or correct it manually.', $failure ) );
 			$this->logger->log(
 				'error',
-				'Paid order with Endless Aisles items cannot be sent to the vendor.',
+				sprintf( 'Paid order #%d with Endless Aisles items cannot be sent to the vendor.', $order_id ),
 				array(
 					'wc_order_id'  => $order_id,
 					'failure_code' => $failure,
@@ -91,6 +96,8 @@ final class OrderIntentRecorder {
 			return;
 		}
 		$this->note( $order, sprintf( 'Endless Aisles: vendor order queued as %s.', $payload->custom_order_id() ) );
+		// The durable row is the source of truth; a failed enqueue only delays sending until the next sweep.
+		( $this->enqueue )( $result['id'] );
 		$this->logger->log(
 			'info',
 			'Vendor order intent recorded.',

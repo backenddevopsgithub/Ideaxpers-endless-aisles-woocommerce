@@ -86,7 +86,7 @@ final class ApiClient implements ApiClientInterface {
 			if ( ctype_digit( $retry_after ) ) {
 				$context['retry_after'] = (int) $retry_after;
 			}
-			throw new ApiException( 'Endless Aisles returned an unsuccessful response.', $context, $status );
+			throw new ApiException( 'Endless Aisles returned an unsuccessful response.', $context, $status, null, substr( $raw, 0, ApiException::BODY_EXCERPT_BYTES ) );
 		}
 		try {
 			$data = json_decode( $raw, false, 512, JSON_THROW_ON_ERROR );

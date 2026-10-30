@@ -4,7 +4,7 @@ namespace IdeaXperts\EndlessAisles\Tests\Support;
 use IdeaXperts\EndlessAisles\Inventory\InventoryStoreInterface;
 
 final class MemoryInventoryStore implements InventoryStoreInterface {
-	public string $lock = '';
+	public string $lock        = '';
 	public bool $refresh_fails = false;
 	/** @var array{run_id:int,after_id:int,counts:array<string,int>}|null */
 	public ?array $saved_cursor = null;
