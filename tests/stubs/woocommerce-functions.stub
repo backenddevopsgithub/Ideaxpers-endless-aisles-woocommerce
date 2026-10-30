@@ -5,6 +5,8 @@ function wc_get_products( array $args ): object {}
 
 function wc_get_product( int $product_id ): object|false|null {}
 
+function wc_get_order( mixed $order = false ): object|false {}
+
 class WC_Product_Simple {
 	public function set_status( string $value ): void {}
 	public function set_name( string $value ): void {}

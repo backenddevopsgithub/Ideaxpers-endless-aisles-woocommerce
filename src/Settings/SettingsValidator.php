@@ -4,9 +4,10 @@ namespace IdeaXperts\EndlessAisles\Settings;
 defined( 'ABSPATH' ) || exit;
 
 final class SettingsValidator {
-	public const ENVIRONMENTS         = array( 'qa', 'production' );
-	public const LOG_LEVELS           = array( 'debug', 'info', 'warning', 'error', 'critical' );
-	public const PRODUCTION_CONFIRMED = 'confirmed-v1';
+	public const ENVIRONMENTS                = array( 'qa', 'production' );
+	public const LOG_LEVELS                  = array( 'debug', 'info', 'warning', 'error', 'critical' );
+	public const PRODUCTION_CONFIRMED        = 'confirmed-v1';
+	public const PRODUCTION_ORDERS_CONFIRMED = 'orders-confirmed-v1';
 
 	/**
 	 * @param array<string,mixed> $input Untrusted settings input.
@@ -21,18 +22,21 @@ final class SettingsValidator {
 		$metadata_keys = $this->metadata_keys( $input['upc_meta_keys'] ?? array() );
 
 		return array(
-			'enabled'              => ! empty( $input['enabled'] ) ? 'yes' : 'no',
-			'environment'          => in_array( $environment, self::ENVIRONMENTS, true ) ? $environment : 'qa',
-			'production_confirmed' => 'production' === $environment && $confirmed ? self::PRODUCTION_CONFIRMED : 'no',
-			'inventory_interval'   => 30,
-			'log_level'            => in_array( $log_level, self::LOG_LEVELS, true ) ? $log_level : 'warning',
-			'alert_email'          => sanitize_email( (string) ( $input['alert_email'] ?? '' ) ),
-			'import_status'        => 'draft',
-			'use_global_unique_id' => ! empty( $input['use_global_unique_id'] ) ? 'yes' : 'no',
-			'upc_meta_keys'        => $metadata_keys,
-			'allow_sku_upc_match'  => ! empty( $input['allow_sku_upc_match'] ) ? 'yes' : 'no',
-			'checkout_unverified'  => 'allow' === ( $input['checkout_unverified'] ?? '' ) ? 'allow' : 'block',
-			'creation_pricing'     => $this->creation_pricing( $input['creation_pricing'] ?? array() ),
+			'enabled'                     => ! empty( $input['enabled'] ) ? 'yes' : 'no',
+			'environment'                 => in_array( $environment, self::ENVIRONMENTS, true ) ? $environment : 'qa',
+			'production_confirmed'        => 'production' === $environment && $confirmed ? self::PRODUCTION_CONFIRMED : 'no',
+			'inventory_interval'          => 30,
+			'log_level'                   => in_array( $log_level, self::LOG_LEVELS, true ) ? $log_level : 'warning',
+			'alert_email'                 => sanitize_email( (string) ( $input['alert_email'] ?? '' ) ),
+			'import_status'               => 'draft',
+			'use_global_unique_id'        => ! empty( $input['use_global_unique_id'] ) ? 'yes' : 'no',
+			'upc_meta_keys'               => $metadata_keys,
+			'allow_sku_upc_match'         => ! empty( $input['allow_sku_upc_match'] ) ? 'yes' : 'no',
+			'checkout_unverified'         => 'allow' === ( $input['checkout_unverified'] ?? '' ) ? 'allow' : 'block',
+			'order_submission'            => ! empty( $input['order_submission'] ) ? 'yes' : 'no',
+			// A second, order-specific Production confirmation; never implied by the general safeguard.
+			'production_orders_confirmed' => 'production' === $environment && $confirmed && ( 1 === ( $input['production_orders_confirmed'] ?? null ) || '1' === ( $input['production_orders_confirmed'] ?? null ) ) ? self::PRODUCTION_ORDERS_CONFIRMED : 'no',
+			'creation_pricing'            => $this->creation_pricing( $input['creation_pricing'] ?? array() ),
 		);
 	}
 

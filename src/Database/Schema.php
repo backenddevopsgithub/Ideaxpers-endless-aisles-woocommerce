@@ -4,7 +4,7 @@ namespace IdeaXperts\EndlessAisles\Database;
 defined( 'ABSPATH' ) || exit;
 
 final class Schema {
-	public const VERSION = '3.2.0';
+	public const VERSION = '3.3.0';
 
 	/** @return list<string> */
 	public static function table_names( string $prefix ): array {
@@ -33,7 +33,7 @@ final class Schema {
 			$prefix . 'ideaxperts_ea_mappings'           => array( 'id', 'source_scope', 'environment', 'wc_product_id', 'wc_variation_id', 'ea_product_id', 'ea_option_id', 'upc', 'normalized_upc', 'mapping_status', 'last_synced_at', 'created_at', 'updated_at' ),
 			$prefix . 'ideaxperts_ea_sync_runs'          => array( 'id', 'run_type', 'status', 'started_at', 'completed_at', 'processed_count', 'success_count', 'failure_count', 'message', 'created_at', 'updated_at' ),
 			$prefix . 'ideaxperts_ea_logs'               => array( 'id', 'level', 'message', 'context', 'created_at' ),
-			$prefix . 'ideaxperts_ea_order_submissions'  => array( 'id', 'wc_order_id', 'idempotency_key', 'status', 'attempt_count', 'ea_order_id', 'last_error', 'submitted_at', 'created_at', 'updated_at' ),
+			$prefix . 'ideaxperts_ea_order_submissions'  => array( 'id', 'wc_order_id', 'idempotency_key', 'environment', 'source_scope', 'custom_order_id', 'status', 'owner_token', 'lease_expires_at', 'attempt_count', 'next_attempt_at', 'payload_hash', 'line_snapshot', 'ea_order_id', 'vendor_status', 'vendor_last_updated', 'status_synced_at', 'shipped_json', 'tracking_json', 'last_error_code', 'last_error', 'submitted_at', 'accepted_at', 'created_at', 'updated_at' ),
 			$prefix . 'ideaxperts_ea_dry_runs'           => array( 'id', 'status', 'source_scope', 'environment', 'started_by', 'started_at', 'updated_at', 'completed_at', 'current_api_page', 'catalog_products_processed', 'catalog_total_products', 'catalog_total_pages', 'worker_diagnostics', 'store_products_scanned', 'store_variations_scanned', 'store_missing_upcs', 'store_total_products', 'store_total_pages', 'current_store_page', 'products_inspected', 'variations_inspected', 'store_records_inspected', 'match_counters', 'warning_counters', 'error_summary', 'resume_cursor', 'cancellation_at', 'last_heartbeat_at', 'claim_token', 'claim_generation' ),
 			$prefix . 'ideaxperts_ea_dry_run_items'      => array( 'id', 'run_id', 'source_scope', 'environment', 'ea_product_id', 'ea_option_id', 'original_upc', 'normalized_upc', 'wc_product_id', 'wc_variation_id', 'classification', 'review_flags', 'review_reason', 'vendor_title', 'vendor_option_description', 'retail_price', 'wholesale_price', 'map_price', 'purchasable', 'discontinued', 'created_at', 'updated_at' ),
 			$prefix . 'ideaxperts_ea_store_identifiers'  => array( 'id', 'run_id', 'wc_product_id', 'wc_variation_id', 'product_type', 'product_status', 'title', 'identifier_type', 'identifier_source', 'original_identifier', 'normalized_identifier', 'parent_product_id', 'ea_product_id', 'ea_option_id', 'created_at' ),
@@ -106,23 +106,35 @@ final class Schema {
 				),
 			),
 			$prefix . 'ideaxperts_ea_order_submissions'  => array(
-				'PRIMARY'         => array(
+				'PRIMARY'             => array(
 					'unique'  => true,
 					'columns' => array( 'id' ),
 				),
-				'idempotency_key' => array(
+				'idempotency_key'     => array(
 					'unique'  => true,
 					'columns' => array( 'idempotency_key' ),
 				),
-				'wc_order_id'     => array(
+				'order_environment'   => array(
+					'unique'  => true,
+					'columns' => array( 'wc_order_id', 'environment' ),
+				),
+				'custom_order_id'     => array(
+					'unique'  => true,
+					'columns' => array( 'custom_order_id' ),
+				),
+				'status_next_attempt' => array(
+					'unique'  => false,
+					'columns' => array( 'status', 'next_attempt_at' ),
+				),
+				'wc_order_id'         => array(
 					'unique'  => false,
 					'columns' => array( 'wc_order_id' ),
 				),
-				'status'          => array(
+				'status'              => array(
 					'unique'  => false,
 					'columns' => array( 'status' ),
 				),
-				'created_at'      => array(
+				'created_at'          => array(
 					'unique'  => false,
 					'columns' => array( 'created_at' ),
 				),
@@ -435,17 +447,35 @@ final class Schema {
  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
  wc_order_id bigint(20) unsigned NOT NULL,
  idempotency_key char(64) NOT NULL,
+ environment varchar(16) NOT NULL DEFAULT 'qa',
+ source_scope varchar(191) NOT NULL DEFAULT 'endless-aisles:qa',
+ custom_order_id varchar(64) NOT NULL DEFAULT '',
  status varchar(32) NOT NULL DEFAULT 'pending',
+ owner_token char(32) NOT NULL DEFAULT '',
+ lease_expires_at datetime NULL,
  attempt_count int(10) unsigned NOT NULL DEFAULT 0,
+ next_attempt_at datetime NULL,
+ payload_hash char(64) NOT NULL DEFAULT '',
+ line_snapshot longtext NULL,
  ea_order_id varchar(191) NOT NULL DEFAULT '',
+ vendor_status varchar(32) NOT NULL DEFAULT '',
+ vendor_last_updated varchar(32) NOT NULL DEFAULT '',
+ status_synced_at datetime NULL,
+ shipped_json longtext NULL,
+ tracking_json longtext NULL,
+ last_error_code varchar(64) NOT NULL DEFAULT '',
  last_error text NULL,
  submitted_at datetime NULL,
+ accepted_at datetime NULL,
  created_at datetime NOT NULL,
  updated_at datetime NOT NULL,
  PRIMARY KEY  (id),
  UNIQUE KEY idempotency_key (idempotency_key),
+ UNIQUE KEY order_environment (wc_order_id,environment),
+ UNIQUE KEY custom_order_id (custom_order_id),
  KEY wc_order_id (wc_order_id),
  KEY status (status),
+ KEY status_next_attempt (status,next_attempt_at),
  KEY created_at (created_at)
 ){$collation};",
 			'dry_runs'                      => "CREATE TABLE {$prefix}ideaxperts_ea_dry_runs (

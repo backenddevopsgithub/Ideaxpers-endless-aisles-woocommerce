@@ -64,6 +64,19 @@ final class SettingsRepositoryTest extends TestCase {
 		self::assertSame( \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED, ( new SettingsRepository() )->get( 'production_confirmed' ) );
 	}
 
+	public function test_stored_production_order_confirmation_requires_the_general_safeguard(): void {
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings'] = array(
+			'environment'                 => 'production',
+			'production_confirmed'        => 'no',
+			'production_orders_confirmed' => \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_ORDERS_CONFIRMED,
+		);
+		self::assertSame( 'no', ( new SettingsRepository() )->get( 'production_orders_confirmed' ) );
+
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['environment'] = 'qa';
+		$GLOBALS['ea_test_options']['ideaxperts_ea_settings']['production_confirmed'] = \IdeaXperts\EndlessAisles\Settings\SettingsValidator::PRODUCTION_CONFIRMED;
+		self::assertSame( 'no', ( new SettingsRepository() )->get( 'production_orders_confirmed' ) );
+	}
+
 	public function test_replacing_the_qa_token_clears_connection_readiness(): void {
 		$repository = new SettingsRepository();
 		$GLOBALS['ea_test_options']['ideaxperts_ea_qa_connection_status'] = array(

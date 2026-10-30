@@ -1,8 +1,6 @@
 <?php
 namespace IdeaXperts\EndlessAisles\Inventory;
 
-use IdeaXperts\EndlessAisles\Import\WooSimpleProductWriter;
-
 defined( 'ABSPATH' ) || exit;
 
 /** Writes stock only to simple products carrying this plugin's creation markers for the same vendor option. */
@@ -15,7 +13,7 @@ final class WooStockWriter implements StockWriterInterface {
 		if ( ! $product instanceof \WC_Product_Simple ) {
 			return self::MISSING;
 		}
-		if ( 'simple' !== $product->get_type() || '' === (string) $product->get_meta( WooSimpleProductWriter::OPERATION_META, true ) || (string) $product->get_meta( '_ideaxperts_ea_create_env', true ) !== $environment || (string) $product->get_meta( '_ideaxperts_ea_create_product', true ) !== $mapping['ea_product_id'] || (string) $product->get_meta( '_ideaxperts_ea_create_option', true ) !== $mapping['ea_option_id'] ) {
+		if ( ! ProductOwnership::owned( $product, $environment, $mapping ) ) {
 			return self::NOT_OWNED;
 		}
 		$previous = (string) $product->get_meta( self::OBSERVED_META, true );

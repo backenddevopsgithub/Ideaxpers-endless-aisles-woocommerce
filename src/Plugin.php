@@ -28,6 +28,10 @@ use IdeaXperts\EndlessAisles\Database\SyncRunRepository;
 use IdeaXperts\EndlessAisles\Database\ImportRepository;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\Monitoring\AlertNotifier;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderIntentRecorder;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderPayloadBuilder;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionRepository;
+use IdeaXperts\EndlessAisles\OrderIntegration\SubmissionGates;
 use IdeaXperts\EndlessAisles\Monitoring\SchedulerHealth;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
 use IdeaXperts\EndlessAisles\Catalog\DryRunManager;
@@ -78,6 +82,7 @@ final class Plugin {
 		$this->container->get( InventoryScheduler::class )->register();
 		$this->container->get( CheckoutStockGuard::class )->register();
 		$this->container->get( SchedulerHealth::class )->register();
+		$this->container->get( OrderIntentRecorder::class )->register();
 		$this->container->get( DryRunManager::class )->register();
 		$this->container->get( ImportManager::class )->register();
 	}
@@ -160,6 +165,18 @@ final class Plugin {
 		$this->container->set( AlertNotifier::class, fn() => new AlertNotifier( $this->container->get( SettingsRepository::class ) ) );
 		$this->container->set( SchedulerHealth::class, fn() => new SchedulerHealth( $this->container->get( InventoryScheduler::class ), $this->container->get( DatabaseLogger::class ) ) );
 		$this->container->set( InventoryRepository::class, static fn() => new InventoryRepository() );
+		$this->container->set( OrderSubmissionRepository::class, static fn() => new OrderSubmissionRepository() );
+		$this->container->set(
+			OrderIntentRecorder::class,
+			fn() => new OrderIntentRecorder(
+				$this->container->get( SettingsRepository::class ),
+				new SubmissionGates( $this->container->get( SettingsRepository::class ) ),
+				$this->container->get( InventoryRepository::class ),
+				$this->container->get( OrderSubmissionRepository::class ),
+				new OrderPayloadBuilder(),
+				$this->container->get( DatabaseLogger::class )
+			)
+		);
 		$this->container->set( WooStockWriter::class, static fn() => new WooStockWriter() );
 		$this->container->set(
 			CheckoutStockGuard::class,
@@ -210,7 +227,8 @@ final class Plugin {
 				$this->container->get( InventoryScheduler::class ),
 				$this->container->get( ConnectionTester::class ),
 				$this->container->get( CatalogDryRunAdmin::class ),
-				$this->container->get( CatalogImportAdmin::class )
+				$this->container->get( CatalogImportAdmin::class ),
+				$this->container->get( OrderSubmissionRepository::class )
 			)
 		);
 	}

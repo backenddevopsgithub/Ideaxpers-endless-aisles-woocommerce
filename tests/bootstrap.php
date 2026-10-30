@@ -298,6 +298,12 @@ function is_email( string $email ): string|false {
 function wp_strip_all_tags( string $text ): string {
 	return trim( strip_tags( $text ) );
 }
+function wc_get_order( mixed $order = false ): object|false {
+	return $GLOBALS['ea_wc_orders'][ (int) $order ] ?? false;
+}
+function home_url(): string {
+	return 'https://smalltownpets.example.test';
+}
 function WC(): object {
 	return $GLOBALS['ea_wc'] ?? (object) array( 'cart' => null );
 }

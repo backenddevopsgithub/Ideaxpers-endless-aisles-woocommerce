@@ -94,7 +94,9 @@ Schema migration `3.3.0` extends `ideaxperts_ea_order_submissions`. The table is
 
 Every transition also adds an order note and an event row, reusing the `import_events` pattern, so support can follow the full history.
 
-The existing `idempotency_key` column (a hash of the order ID plus line item IDs) is retired. It changes whenever the order is edited, which is the opposite of what an idempotency key must do.
+The existing `idempotency_key` column used to be a hash of the order ID plus line item IDs, which changes whenever the order is edited — the opposite of what an idempotency key must do. `dbDelta` cannot drop columns or retype indexes, so the column and its unique index are kept, but the value is now `sha256(custom_order_id)` and can never diverge from the vendor-side key. New uniqueness uses new index names (`order_environment`, `custom_order_id`) for the same reason. *(Implemented in Phase A, schema 3.3.0.)*
+
+Intent rows are recorded only while the submission switch is on. Phase B must still treat a `pending` row older than 72 hours as `manual_review` rather than sending it, so turning the switch off and on again later can never ship a stale order.
 
 ## 5. State machine
 

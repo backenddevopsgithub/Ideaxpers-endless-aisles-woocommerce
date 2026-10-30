@@ -5,6 +5,7 @@ use IdeaXperts\EndlessAisles\API\ConnectionTester;
 use IdeaXperts\EndlessAisles\Database\Schema;
 use IdeaXperts\EndlessAisles\Logging\DatabaseLogger;
 use IdeaXperts\EndlessAisles\Logging\Redactor;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionStoreInterface;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
 use IdeaXperts\EndlessAisles\Settings\SettingsRepository;
 use IdeaXperts\EndlessAisles\Settings\SettingsValidator;
@@ -21,7 +22,8 @@ final class Admin {
 		private readonly InventoryScheduler $scheduler,
 		private readonly ConnectionTester $connection_tester,
 		private readonly CatalogDryRunAdmin $catalog_admin,
-		private readonly CatalogImportAdmin $import_admin
+		private readonly CatalogImportAdmin $import_admin,
+		private readonly ?OrderSubmissionStoreInterface $submissions = null
 	) {}
 
 	public function register(): void {
@@ -176,6 +178,8 @@ final class Admin {
 			$unverified .= '<option value="' . esc_attr( $value ) . '" ' . selected( $value, $settings['checkout_unverified'], false ) . '>' . esc_html( $label ) . '</option>';
 		}
 		$this->row( __( 'Checkout when vendor stock cannot be verified', 'ideaxperts-endless-aisles' ), '<select name="settings[checkout_unverified]">' . $unverified . '</select><p class="description">' . esc_html__( 'Endless Aisles stock is rechecked live when a customer places an order. This controls what happens if that check fails, for example during a vendor outage.', 'ideaxperts-endless-aisles' ) . '</p>' );
+		$this->row( __( 'Vendor order submission', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[order_submission]" value="1" ' . checked( 'yes', $settings['order_submission'], false ) . '> ' . esc_html__( 'Record paid orders containing Endless Aisles items for submission to the vendor', 'ideaxperts-endless-aisles' ) . '</label><p class="description">' . esc_html__( 'Off by default. Every order sent to Endless Aisles may be shipped.', 'ideaxperts-endless-aisles' ) . '</p>' );
+		$this->row( __( 'Production order safeguard', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[production_orders_confirmed]" value="1" ' . checked( SettingsValidator::PRODUCTION_ORDERS_CONFIRMED, $settings['production_orders_confirmed'], false ) . '> ' . esc_html__( 'I explicitly authorize sending real orders to the Production vendor.', 'ideaxperts-endless-aisles' ) . '</label><p class="description">' . esc_html__( 'Separate from the Production safeguard above and only effective together with it.', 'ideaxperts-endless-aisles' ) . '</p>' );
 		$this->row( __( 'Alert email', 'ideaxperts-endless-aisles' ), '<input type="email" class="regular-text" name="settings[alert_email]" value="' . esc_attr( (string) $settings['alert_email'] ) . '">' );
 		$pricing = is_array( $settings['creation_pricing'] ?? null ) ? $settings['creation_pricing'] : array();
 		$this->row( __( 'Controlled QA pricing', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[creation_pricing][enabled]" value="1" ' . checked( true, ! empty( $pricing['enabled'] ), false ) . '> ' . esc_html__( 'Enable the explicitly saved staging pricing policy', 'ideaxperts-endless-aisles' ) . '</label><p class="description">Saving is required; there is no implicit pricing fallback.</p>' );
@@ -233,6 +237,43 @@ final class Admin {
 		echo '<table class="widefat striped"><tbody>';
 		foreach ( $rows as $label => $value ) {
 			echo '<tr><th scope="row">' . esc_html( $label ) . '</th><td>' . esc_html( $value ) . '</td></tr>';
+		}
+		echo '</tbody></table>';
+		$this->render_vendor_orders();
+	}
+
+	/** Read-only: submission state is changed only by the workers and audited admin actions. */
+	private function render_vendor_orders(): void {
+		if ( null === $this->submissions ) {
+			return;
+		}
+		echo '<h2>' . esc_html__( 'Vendor orders', 'ideaxperts-endless-aisles' ) . '</h2>';
+		$rows = $this->submissions->recent( 25 );
+		if ( array() === $rows ) {
+			echo '<p>' . esc_html__( 'No vendor order submissions recorded.', 'ideaxperts-endless-aisles' ) . '</p>';
+			return;
+		}
+		$columns = array(
+			'wc_order_id'     => __( 'Order', 'ideaxperts-endless-aisles' ),
+			'environment'     => __( 'Environment', 'ideaxperts-endless-aisles' ),
+			'custom_order_id' => __( 'Vendor reference', 'ideaxperts-endless-aisles' ),
+			'status'          => __( 'Status', 'ideaxperts-endless-aisles' ),
+			'last_error_code' => __( 'Reason', 'ideaxperts-endless-aisles' ),
+			'ea_order_id'     => __( 'Vendor order #', 'ideaxperts-endless-aisles' ),
+			'attempt_count'   => __( 'Attempts', 'ideaxperts-endless-aisles' ),
+			'updated_at'      => __( 'Updated (UTC)', 'ideaxperts-endless-aisles' ),
+		);
+		echo '<table class="widefat striped"><thead><tr>';
+		foreach ( $columns as $label ) {
+			echo '<th>' . esc_html( $label ) . '</th>';
+		}
+		echo '</tr></thead><tbody>';
+		foreach ( $rows as $row ) {
+			echo '<tr>';
+			foreach ( array_keys( $columns ) as $key ) {
+				echo '<td>' . esc_html( (string) ( $row[ $key ] ?? '' ) ) . '</td>';
+			}
+			echo '</tr>';
 		}
 		echo '</tbody></table>';
 	}

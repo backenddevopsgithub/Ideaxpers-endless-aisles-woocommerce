@@ -116,6 +116,16 @@ final class SettingsValidatorTest extends TestCase {
 		self::assertSame( 86400, $manipulated['max_age_seconds'] );
 	}
 
+	public function test_order_submission_is_off_by_default_and_production_orders_need_both_confirmations(): void {
+		$validator = new SettingsValidator();
+		self::assertSame( 'no', $validator->validate( array() )['order_submission'] );
+		self::assertSame( 'yes', $validator->validate( array( 'order_submission' => '1' ) )['order_submission'] );
+		self::assertSame( 'no', $validator->validate( array( 'environment' => 'qa', 'production_confirmed' => '1', 'production_orders_confirmed' => '1' ) )['production_orders_confirmed'] );
+		self::assertSame( 'no', $validator->validate( array( 'environment' => 'production', 'production_orders_confirmed' => '1' ) )['production_orders_confirmed'] );
+		self::assertSame( 'no', $validator->validate( array( 'environment' => 'production', 'production_confirmed' => '1', 'production_orders_confirmed' => 'yes' ) )['production_orders_confirmed'] );
+		self::assertSame( SettingsValidator::PRODUCTION_ORDERS_CONFIRMED, $validator->validate( array( 'environment' => 'production', 'production_confirmed' => '1', 'production_orders_confirmed' => '1' ) )['production_orders_confirmed'] );
+	}
+
 	public function test_unverified_checkout_blocks_unless_allow_is_explicit(): void {
 		$validator = new SettingsValidator();
 		self::assertSame( 'block', $validator->validate( array() )['checkout_unverified'] );

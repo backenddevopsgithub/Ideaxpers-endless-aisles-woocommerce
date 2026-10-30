@@ -13,23 +13,28 @@ final class SettingsRepository {
 	/** @return array<string,mixed> */
 	public function all(): array {
 		$defaults = array(
-			'enabled'              => 'no',
-			'environment'          => 'qa',
-			'production_confirmed' => 'no',
-			'inventory_interval'   => 30,
-			'log_level'            => 'warning',
-			'alert_email'          => '',
-			'import_status'        => 'draft',
-			'use_global_unique_id' => 'yes',
-			'upc_meta_keys'        => array(),
-			'allow_sku_upc_match'  => 'no',
-			'checkout_unverified'  => 'block',
-			'creation_pricing'     => array(),
+			'enabled'                     => 'no',
+			'environment'                 => 'qa',
+			'production_confirmed'        => 'no',
+			'inventory_interval'          => 30,
+			'log_level'                   => 'warning',
+			'alert_email'                 => '',
+			'import_status'               => 'draft',
+			'use_global_unique_id'        => 'yes',
+			'upc_meta_keys'               => array(),
+			'allow_sku_upc_match'         => 'no',
+			'checkout_unverified'         => 'block',
+			'order_submission'            => 'no',
+			'production_orders_confirmed' => 'no',
+			'creation_pricing'            => array(),
 		);
 		$value    = get_option( self::OPTION, array() );
 		$settings = wp_parse_args( is_array( $value ) ? $value : array(), $defaults );
 		if ( 'production' !== $settings['environment'] || SettingsValidator::PRODUCTION_CONFIRMED !== $settings['production_confirmed'] ) {
 			$settings['production_confirmed'] = 'no';
+		}
+		if ( 'no' === $settings['production_confirmed'] || SettingsValidator::PRODUCTION_ORDERS_CONFIRMED !== $settings['production_orders_confirmed'] ) {
+			$settings['production_orders_confirmed'] = 'no';
 		}
 		return $settings;
 	}
