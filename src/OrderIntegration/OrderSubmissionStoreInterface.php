@@ -30,6 +30,14 @@ interface OrderSubmissionStoreInterface {
 	public function due( int $limit ): array;
 
 	/**
+	 * Accepted, non-terminal vendor orders in `$environment` not checked for
+	 * `$interval_seconds`, least recently checked first.
+	 *
+	 * @return list<array<string,mixed>>
+	 */
+	public function reconcilable( string $environment, int $interval_seconds, int $limit ): array;
+
+	/**
 	 * Compare-and-swap into `submitting`, committed before any HTTP request.
 	 * Returns the new owner token, or '' if another worker or state change won.
 	 */

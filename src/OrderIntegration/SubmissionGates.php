@@ -28,6 +28,21 @@ final class SubmissionGates {
 	}
 
 	/**
+	 * Status reads for already-accepted orders continue even when new submission is
+	 * switched off: orders the vendor holds still need tracking and cancellation notices.
+	 */
+	public function reconciliation_failure(): string {
+		if ( 'yes' !== $this->settings->get( 'enabled', 'no' ) ) {
+			return 'integration_disabled';
+		}
+		$environment = (string) $this->settings->get( 'environment', 'qa' );
+		if ( 'production' === $environment && SettingsValidator::PRODUCTION_CONFIRMED !== $this->settings->get( 'production_confirmed', 'no' ) ) {
+			return 'environment_not_permitted';
+		}
+		return in_array( $environment, SettingsValidator::ENVIRONMENTS, true ) && '' !== $this->settings->token( $environment ) ? '' : 'credential_missing';
+	}
+
+	/**
 	 * Full pre-send check for an existing submission row.
 	 *
 	 * @param array<string,mixed> $row

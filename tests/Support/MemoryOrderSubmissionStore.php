@@ -76,6 +76,15 @@ final class MemoryOrderSubmissionStore implements OrderSubmissionStoreInterface 
 		return array_slice( array_values( $due ), 0, $limit );
 	}
 
+	public function reconcilable( string $environment, int $interval_seconds, int $limit ): array {
+		$cutoff = gmdate( 'Y-m-d H:i:s', strtotime( current_time( 'mysql', true ) . ' UTC' ) - $interval_seconds );
+		$rows   = array_filter(
+			$this->rows,
+			static fn( array $row ): bool => $row['environment'] === $environment && in_array( $row['status'], array( 'accepted', 'scheduled', 'partially_shipped' ), true ) && '' !== (string) $row['ea_order_id'] && ( empty( $row['status_synced_at'] ) || $row['status_synced_at'] <= $cutoff )
+		);
+		return array_slice( array_values( $rows ), 0, $limit );
+	}
+
 	public function claim( int $id, string $from_status, int $lease_seconds ): string {
 		$row = $this->rows[ $id ] ?? null;
 		$now = current_time( 'mysql', true );

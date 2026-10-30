@@ -34,6 +34,8 @@ use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionClient;
 use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionRepository;
 use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionScheduler;
 use IdeaXperts\EndlessAisles\OrderIntegration\OrderSubmissionWorker;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderStatusClient;
+use IdeaXperts\EndlessAisles\OrderIntegration\OrderStatusReconciler;
 use IdeaXperts\EndlessAisles\OrderIntegration\SubmissionGates;
 use IdeaXperts\EndlessAisles\Monitoring\SchedulerHealth;
 use IdeaXperts\EndlessAisles\Scheduling\InventoryScheduler;
@@ -182,7 +184,14 @@ final class Plugin {
 					new OrderSubmissionClient( $this->container->get( SettingsRepository::class ), $this->container->get( BaseUrlResolver::class ), $this->container->get( DatabaseLogger::class ) ),
 					$this->container->get( DatabaseLogger::class )
 				),
-				$this->container->get( SubmissionGates::class )
+				$this->container->get( SubmissionGates::class ),
+				new OrderStatusReconciler(
+					$this->container->get( SettingsRepository::class ),
+					$this->container->get( SubmissionGates::class ),
+					$this->container->get( OrderSubmissionRepository::class ),
+					new OrderStatusClient( $this->container->get( SettingsRepository::class ), $this->container->get( BaseUrlResolver::class ), $this->container->get( DatabaseLogger::class ) ),
+					$this->container->get( DatabaseLogger::class )
+				)
 			)
 		);
 		$this->container->set(

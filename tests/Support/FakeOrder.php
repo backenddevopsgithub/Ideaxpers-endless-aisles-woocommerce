@@ -9,6 +9,18 @@ final class FakeOrder {
 	public array $shipping_address;
 	/** @var array<string,string> */
 	public array $billing_address;
+	/** @var array<string,string> */
+	public array $meta = array();
+	public int $saves  = 0;
+
+	public function update_meta_data( string $key, string $value ): void {
+		$this->meta[ $key ] = $value;
+	}
+
+	public function save(): int {
+		++$this->saves;
+		return $this->id;
+	}
 
 	/** @param list<FakeOrderItem> $items */
 	public function __construct( private readonly int $id, public array $items, public string $status = 'processing', public bool $shipping = true ) {

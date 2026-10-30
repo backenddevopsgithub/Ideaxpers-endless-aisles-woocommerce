@@ -70,6 +70,14 @@ final class OrderSubmissionRepository implements OrderSubmissionStoreInterface {
 		return is_array( $rows ) ? array_values( $rows ) : array();
 	}
 
+	public function reconcilable( string $environment, int $interval_seconds, int $limit ): array {
+		global $wpdb;
+		$table  = $wpdb->prefix . self::TABLE;
+		$cutoff = gmdate( 'Y-m-d H:i:s', strtotime( current_time( 'mysql', true ) . ' UTC' ) - $interval_seconds );
+		$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE environment = %s AND status IN (%s,%s,%s) AND ea_order_id <> '' AND (status_synced_at IS NULL OR status_synced_at <= %s) ORDER BY status_synced_at IS NOT NULL, status_synced_at ASC, id ASC LIMIT %d", $environment, 'accepted', 'scheduled', 'partially_shipped', $cutoff, min( 50, max( 1, $limit ) ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return is_array( $rows ) ? array_values( $rows ) : array();
+	}
+
 	public function claim( int $id, string $from_status, int $lease_seconds ): string {
 		global $wpdb;
 		$table = $wpdb->prefix . self::TABLE;
