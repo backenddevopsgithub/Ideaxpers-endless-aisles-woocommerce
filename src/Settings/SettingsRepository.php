@@ -23,6 +23,7 @@ final class SettingsRepository {
 			'use_global_unique_id' => 'yes',
 			'upc_meta_keys'        => array(),
 			'allow_sku_upc_match'  => 'no',
+			'checkout_unverified'  => 'block',
 			'creation_pricing'     => array(),
 		);
 		$value    = get_option( self::OPTION, array() );

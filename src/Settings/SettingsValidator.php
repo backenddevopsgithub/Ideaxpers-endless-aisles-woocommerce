@@ -31,6 +31,7 @@ final class SettingsValidator {
 			'use_global_unique_id' => ! empty( $input['use_global_unique_id'] ) ? 'yes' : 'no',
 			'upc_meta_keys'        => $metadata_keys,
 			'allow_sku_upc_match'  => ! empty( $input['allow_sku_upc_match'] ) ? 'yes' : 'no',
+			'checkout_unverified'  => 'allow' === ( $input['checkout_unverified'] ?? '' ) ? 'allow' : 'block',
 			'creation_pricing'     => $this->creation_pricing( $input['creation_pricing'] ?? array() ),
 		);
 	}

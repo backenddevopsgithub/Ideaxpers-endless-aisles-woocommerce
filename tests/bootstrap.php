@@ -287,6 +287,9 @@ function wc_get_product_types(): array {
 function get_post_stati(): array {
 	return array( 'publish' => 'publish', 'draft' => 'draft', 'pending' => 'pending', 'private' => 'private', 'future' => 'future', 'trash' => 'trash', 'auto-draft' => 'auto-draft', 'inherit' => 'inherit' );
 }
+function WC(): object {
+	return $GLOBALS['ea_wc'] ?? (object) array( 'cart' => null );
+}
 function wc_get_product( int $product_id ): object|false {
 	$GLOBALS['ea_wc_reads'][] = array( 'wc_get_product', $product_id );
 	return $GLOBALS['ea_wc_product_map'][ $product_id ] ?? false;

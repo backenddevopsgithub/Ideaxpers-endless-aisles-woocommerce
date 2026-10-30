@@ -115,4 +115,11 @@ final class SettingsValidatorTest extends TestCase {
 		self::assertSame( 2, $manipulated['decimal_places'] );
 		self::assertSame( 86400, $manipulated['max_age_seconds'] );
 	}
+
+	public function test_unverified_checkout_blocks_unless_allow_is_explicit(): void {
+		$validator = new SettingsValidator();
+		self::assertSame( 'block', $validator->validate( array() )['checkout_unverified'] );
+		self::assertSame( 'block', $validator->validate( array( 'checkout_unverified' => 'ALLOW' ) )['checkout_unverified'] );
+		self::assertSame( 'allow', $validator->validate( array( 'checkout_unverified' => 'allow' ) )['checkout_unverified'] );
+	}
 }

@@ -168,6 +168,14 @@ final class Admin {
 			$options .= '<option value="' . esc_attr( $level ) . '" ' . selected( $level, $settings['log_level'], false ) . '>' . esc_html( ucfirst( $level ) ) . '</option>';
 		}
 		$this->row( __( 'Logging level', 'ideaxperts-endless-aisles' ), '<select name="settings[log_level]">' . $options . '</select>' );
+		$unverified = '';
+		foreach ( array(
+			'block' => __( 'Block checkout (recommended)', 'ideaxperts-endless-aisles' ),
+			'allow' => __( 'Allow checkout using last synchronized stock', 'ideaxperts-endless-aisles' ),
+		) as $value => $label ) {
+			$unverified .= '<option value="' . esc_attr( $value ) . '" ' . selected( $value, $settings['checkout_unverified'], false ) . '>' . esc_html( $label ) . '</option>';
+		}
+		$this->row( __( 'Checkout when vendor stock cannot be verified', 'ideaxperts-endless-aisles' ), '<select name="settings[checkout_unverified]">' . $unverified . '</select><p class="description">' . esc_html__( 'Endless Aisles stock is rechecked live when a customer places an order. This controls what happens if that check fails, for example during a vendor outage.', 'ideaxperts-endless-aisles' ) . '</p>' );
 		$this->row( __( 'Alert email', 'ideaxperts-endless-aisles' ), '<input type="email" class="regular-text" name="settings[alert_email]" value="' . esc_attr( (string) $settings['alert_email'] ) . '">' );
 		$pricing = is_array( $settings['creation_pricing'] ?? null ) ? $settings['creation_pricing'] : array();
 		$this->row( __( 'Controlled QA pricing', 'ideaxperts-endless-aisles' ), '<label><input type="checkbox" name="settings[creation_pricing][enabled]" value="1" ' . checked( true, ! empty( $pricing['enabled'] ), false ) . '> ' . esc_html__( 'Enable the explicitly saved staging pricing policy', 'ideaxperts-endless-aisles' ) . '</label><p class="description">Saving is required; there is no implicit pricing fallback.</p>' );

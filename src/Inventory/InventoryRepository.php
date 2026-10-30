@@ -73,18 +73,39 @@ final class InventoryRepository implements InventoryStoreInterface {
 
 	public function active_mappings( string $scope, string $environment, int $after_id, int $limit ): array {
 		global $wpdb;
-		$table  = $wpdb->prefix . 'ideaxperts_ea_mappings';
-		$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT id, wc_product_id, ea_product_id, ea_option_id FROM {$table} WHERE source_scope = %s AND environment = %s AND mapping_status = %s AND wc_variation_id = 0 AND ea_option_id <> '' AND id > %d ORDER BY id ASC LIMIT %d", $scope, $environment, 'active', $after_id, $limit ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$result = array();
+		$table = $wpdb->prefix . 'ideaxperts_ea_mappings';
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT id, wc_product_id, ea_product_id, ea_option_id FROM {$table} WHERE source_scope = %s AND environment = %s AND mapping_status = %s AND wc_variation_id = 0 AND ea_option_id <> '' AND id > %d ORDER BY id ASC LIMIT %d", $scope, $environment, 'active', $after_id, $limit ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return array_map( array( self::class, 'mapping_row' ), is_array( $rows ) ? array_values( $rows ) : array() );
+	}
+
+	public function mappings_for_products( string $scope, string $environment, array $product_ids ): array {
+		global $wpdb;
+		$product_ids = array_values( array_unique( array_filter( array_map( 'absint', $product_ids ) ) ) );
+		if ( array() === $product_ids ) {
+			return array();
+		}
+		$table        = $wpdb->prefix . 'ideaxperts_ea_mappings';
+		$placeholders = implode( ',', array_fill( 0, count( $product_ids ), '%d' ) );
+		$rows         = $wpdb->get_results( $wpdb->prepare( "SELECT id, wc_product_id, ea_product_id, ea_option_id FROM {$table} WHERE source_scope = %s AND environment = %s AND mapping_status = %s AND wc_variation_id = 0 AND wc_product_id IN ({$placeholders})", $scope, $environment, 'active', ...$product_ids ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- One %d per spread product ID.
+		$result       = array();
 		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
-			$result[] = array(
-				'id'            => (int) $row['id'],
-				'wc_product_id' => (int) $row['wc_product_id'],
-				'ea_product_id' => (string) $row['ea_product_id'],
-				'ea_option_id'  => (string) $row['ea_option_id'],
-			);
+			$mapping                             = self::mapping_row( $row );
+			$result[ $mapping['wc_product_id'] ] = $mapping;
 		}
 		return $result;
+	}
+
+	/**
+	 * @param array<string,mixed> $row
+	 * @return array{id:int,wc_product_id:int,ea_product_id:string,ea_option_id:string}
+	 */
+	private static function mapping_row( array $row ): array {
+		return array(
+			'id'            => (int) $row['id'],
+			'wc_product_id' => (int) $row['wc_product_id'],
+			'ea_product_id' => (string) $row['ea_product_id'],
+			'ea_option_id'  => (string) $row['ea_option_id'],
+		);
 	}
 
 	public function mark_synced( int $mapping_id ): void {

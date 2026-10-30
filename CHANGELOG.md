@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- Added live vendor stock verification at order placement for classic and block (Store API) checkout. Only actively mapped simple products are checked; shortages and vendor-omitted SKUs block the order with a customer message, local stock is refreshed from the live answer, and a new `checkout_unverified` setting (default Block) decides what happens when the vendor cannot be reached.
 - Added scheduled inventory synchronization for active simple-product mappings: batched read-only `GET /api/stock?sku=` lookups, managed stock with backorders disabled, writes limited to products carrying this plugin's creation markers, vendor-omitted SKUs set to 0, API failures leaving stock unchanged, an expiring single-owner lock, stale-observation protection, and resumable 25-second passes recorded in sync runs.
 - Added Milestone 3C's simple Draft writer, committed creation intent, exact operation correlation, read-only crash recovery and transactional `vendor_created` mapping finalization.
 - Added sanitized QA creation previews and deliberate Draft approval UI. Production fails before reservations until a pricing rule is explicitly approved; no vendor price rule is inferred.

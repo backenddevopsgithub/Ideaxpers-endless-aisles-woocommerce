@@ -16,6 +16,7 @@ use IdeaXperts\EndlessAisles\API\BaseUrlResolver;
 use IdeaXperts\EndlessAisles\API\ConnectionTester;
 use IdeaXperts\EndlessAisles\API\EndpointRegistry;
 use IdeaXperts\EndlessAisles\API\StockService;
+use IdeaXperts\EndlessAisles\Inventory\CheckoutStockGuard;
 use IdeaXperts\EndlessAisles\Inventory\InventoryRepository;
 use IdeaXperts\EndlessAisles\Inventory\InventorySync;
 use IdeaXperts\EndlessAisles\Inventory\WooStockWriter;
@@ -72,6 +73,7 @@ final class Plugin {
 		( new Migrator() )->maybe_migrate();
 		$this->container->get( Admin::class )->register();
 		$this->container->get( InventoryScheduler::class )->register();
+		$this->container->get( CheckoutStockGuard::class )->register();
 		$this->container->get( DryRunManager::class )->register();
 		$this->container->get( ImportManager::class )->register();
 	}
@@ -151,12 +153,24 @@ final class Plugin {
 				$this->container->get( DatabaseLogger::class )
 			)
 		);
+		$this->container->set( InventoryRepository::class, static fn() => new InventoryRepository() );
+		$this->container->set( WooStockWriter::class, static fn() => new WooStockWriter() );
+		$this->container->set(
+			CheckoutStockGuard::class,
+			fn() => new CheckoutStockGuard(
+				$this->container->get( SettingsRepository::class ),
+				$this->container->get( StockService::class ),
+				$this->container->get( InventoryRepository::class ),
+				$this->container->get( WooStockWriter::class ),
+				$this->container->get( DatabaseLogger::class )
+			)
+		);
 		$this->container->set(
 			InventorySync::class,
 			fn() => new InventorySync(
 				$this->container->get( StockService::class ),
-				new InventoryRepository(),
-				new WooStockWriter(),
+				$this->container->get( InventoryRepository::class ),
+				$this->container->get( WooStockWriter::class ),
 				$this->container->get( DatabaseLogger::class ),
 				continuation: static fn(): bool => InventoryScheduler::schedule_continuation()
 			)

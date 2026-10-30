@@ -23,6 +23,12 @@ interface InventoryStoreInterface {
 	/** @return list<array{id:int,wc_product_id:int,ea_product_id:string,ea_option_id:string}> */
 	public function active_mappings( string $scope, string $environment, int $after_id, int $limit ): array;
 
+	/**
+	 * @param list<int> $product_ids
+	 * @return array<int,array{id:int,wc_product_id:int,ea_product_id:string,ea_option_id:string}> Keyed by WooCommerce product ID.
+	 */
+	public function mappings_for_products( string $scope, string $environment, array $product_ids ): array;
+
 	public function mark_synced( int $mapping_id ): void;
 
 	public function start_run(): int;
